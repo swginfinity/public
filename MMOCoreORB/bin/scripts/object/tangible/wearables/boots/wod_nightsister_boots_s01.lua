@@ -1,0 +1,5 @@
+
+object_tangible_wearables_boots_wod_nightsister_boots_s01 = object_tangible_wearables_boots_shared_wod_nightsister_boots_s01:new {
+
+}
+ObjectTemplates:addTemplate(object_tangible_wearables_boots_wod_nightsister_boots_s01, "object/tangible/wearables/boots/wod_nightsister_boots_s01.iff")

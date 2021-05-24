@@ -1,0 +1,5 @@
+object_intangible_pet_merek_deaths_head_hue = object_intangible_pet_shared_merek_deaths_head_hue:new {
+
+}
+
+ObjectTemplates:addTemplate(object_intangible_pet_merek_deaths_head_hue, "object/intangible/pet/merek_deaths_head_hue.iff")

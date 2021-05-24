@@ -1,0 +1,5 @@
+object_intangible_pet_malignant_squill_hue = object_intangible_pet_shared_malignant_squill_hue:new {
+
+}
+
+ObjectTemplates:addTemplate(object_intangible_pet_malignant_squill_hue, "object/intangible/pet/malignant_squill_hue.iff")

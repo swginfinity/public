@@ -1,0 +1,6 @@
+
+object_intangible_pet_gilded_belsavis_varactyl_hue = object_intangible_pet_shared_gilded_belsavis_varactyl_hue:new {
+
+}
+
+ObjectTemplates:addTemplate(object_intangible_pet_gilded_belsavis_varactyl_hue, "object/intangible/pet/gilded_belsavis_varactyl_hue.iff")

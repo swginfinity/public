@@ -1,0 +1,5 @@
+object_intangible_pet_borgle_protector_hue = object_intangible_pet_shared_borgle_protector_hue:new {
+
+}
+
+ObjectTemplates:addTemplate(object_intangible_pet_borgle_protector_hue, "object/intangible/pet/borgle_protector_hue.iff")

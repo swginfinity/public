@@ -1,0 +1,5 @@
+object_intangible_pet_riverside_sulfur_mynock_hue = object_intangible_pet_shared_riverside_sulfur_mynock_hue:new {
+
+}
+
+ObjectTemplates:addTemplate(object_intangible_pet_riverside_sulfur_mynock_hue, "object/intangible/pet/riverside_sulfur_mynock_hue.iff")

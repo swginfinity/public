@@ -1,0 +1,5 @@
+object_intangible_pet_mantigrue_hunter_hue = object_intangible_pet_shared_mantigrue_hunter_hue:new {
+
+}
+
+ObjectTemplates:addTemplate(object_intangible_pet_mantigrue_hunter_hue, "object/intangible/pet/mantigrue_hunter_hue.iff")
