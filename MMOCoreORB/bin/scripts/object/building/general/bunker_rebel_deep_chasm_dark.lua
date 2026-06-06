@@ -1,0 +1,4 @@
+object_building_general_bunker_rebel_deep_chasm_dark = object_building_general_shared_bunker_rebel_deep_chasm_dark:new {
+
+}
+ObjectTemplates:addTemplate(object_building_general_bunker_rebel_deep_chasm_dark, "object/building/general/bunker_rebel_deep_chasm_dark.iff")

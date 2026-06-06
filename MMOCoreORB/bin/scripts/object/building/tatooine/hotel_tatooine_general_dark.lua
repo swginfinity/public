@@ -1,0 +1,4 @@
+object_building_tatooine_hotel_tatooine_general_dark = object_building_tatooine_shared_hotel_tatooine_general_dark:new {
+
+}
+ObjectTemplates:addTemplate(object_building_tatooine_hotel_tatooine_general_dark, "object/building/tatooine/hotel_tatooine_general_dark.iff")

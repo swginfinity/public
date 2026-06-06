@@ -1,0 +1,5 @@
+object_mobile_shared_space_comm_quest_hortrix_steelarm_chiss_m = object_mobile_shared_space_comm_quest_hortrix_steelarm_chiss_m:new {
+
+}
+
+ObjectTemplates:addTemplate(object_mobile_shared_space_comm_quest_hortrix_steelarm_chiss_m, "object/mobile/shared_space_comm_quest_hortrix_steelarm_chiss_m.iff")

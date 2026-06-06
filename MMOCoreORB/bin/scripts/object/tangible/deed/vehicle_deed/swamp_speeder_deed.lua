@@ -1,0 +1,5 @@
+object_tangible_deed_vehicle_deed_swamp_speeder_deed = object_tangible_deed_vehicle_deed_shared_swamp_speeder_deed:new {
+
+}
+
+ObjectTemplates:addTemplate(object_tangible_deed_vehicle_deed_swamp_speeder_deed, "object/tangible/deed/vehicle_deed/swamp_speeder_deed.iff")

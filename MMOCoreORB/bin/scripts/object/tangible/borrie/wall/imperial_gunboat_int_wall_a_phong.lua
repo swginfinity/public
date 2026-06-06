@@ -1,0 +1,4 @@
+object_tangible_borrie_wall_imperial_gunboat_int_wall_a_phong = object_tangible_borrie_wall_shared_imperial_gunboat_int_wall_a_phong:new {
+    objectMenuComponent = "DestructibleCityDecorationMenuComponent",
+}
+ObjectTemplates:addTemplate(object_tangible_borrie_wall_imperial_gunboat_int_wall_a_phong, "object/tangible/borrie/wall/imperial_gunboat_int_wall_a_phong.iff")

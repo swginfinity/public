@@ -1,0 +1,4 @@
+object_tangible_borrie_wall_bunker_crimelord_wall_b_wspec = object_tangible_borrie_wall_shared_bunker_crimelord_wall_b_wspec:new {
+    objectMenuComponent = "DestructibleCityDecorationMenuComponent",
+}
+ObjectTemplates:addTemplate(object_tangible_borrie_wall_bunker_crimelord_wall_b_wspec, "object/tangible/borrie/wall/bunker_crimelord_wall_b_wspec.iff")

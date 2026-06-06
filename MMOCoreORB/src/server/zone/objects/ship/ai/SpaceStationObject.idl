@@ -1,0 +1,49 @@
+/*
+				Copyright <SWGEmu>
+		See file COPYING for copying conditions.
+*/
+
+package server.zone.objects.ship.ai;
+
+import server.zone.objects.ship.ShipObject;
+import server.zone.objects.ship.ai.ShipAiAgent;
+import server.zone.objects.scene.SceneObject;
+import server.zone.objects.creature.CreatureObject;
+import engine.log.Logger;
+include server.zone.packets.object.ObjectMenuResponse;
+
+@json
+class SpaceStationObject extends ShipAiAgent {
+
+	public SpaceStationObject() {
+		Logger.setLoggingName("SpaceStationObject");
+		Logger.setLogging(false);
+		Logger.setGlobalLogging(true);
+	}
+
+	/**
+	 * Fills the radial options
+	 * @pre { this is locked }
+	 * @post { this is locked }
+	 */
+	@local
+	@dirty
+	public native void fillObjectMenuResponse(ObjectMenuResponse menuResponse, CreatureObject player);
+
+	/**
+	 * Handles the radial selection
+	 * @pre { this is locked, player is locked }
+	 * @post { this is locked, player is locked }
+	 * @return 0 on success
+	 */
+	@preLocked
+	public native int handleObjectMenuSelect(CreatureObject player, byte selectedID);
+
+	@dirty
+	public native abstract float getOutOfRangeDistance(unsigned long specialRangeObjectID = 0);
+
+	@dirty
+	public boolean isSpaceStation() {
+		return true;
+	}
+}

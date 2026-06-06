@@ -1,0 +1,388 @@
+/*
+				Copyright <SWGEmu>
+		See file COPYING for copying conditions.
+*/
+
+#include "server/zone/objects/intangible/ShipControlDevice.h"
+#include "server/zone/objects/creature/CreatureObject.h"
+#include "server/zone/objects/player/PlayerObject.h"
+#include "server/zone/packets/object/ObjectMenuResponse.h"
+#include "server/zone/Zone.h"
+#include "server/zone/SpaceZone.h"
+#include "server/zone/managers/player/PlayerManager.h"
+#include "server/zone/managers/collision/CollisionManager.h"
+#include "server/zone/objects/ship/ShipObject.h"
+#include "server/zone/objects/ship/PobShipObject.h"
+#include "server/zone/objects/intangible/tasks/LaunchShipTask.h"
+#include "server/zone/objects/intangible/tasks/StoreShipTask.h"
+#include "server/zone/managers/ship/ShipManager.h"
+#include "server/zone/managers/planet/PlanetManager.h"
+#include "server/zone/managers/stringid/StringIdManager.h"
+#include "server/zone/packets/scene/AttributeListMessage.h"
+#include "server/zone/objects/intangible/ControlDevice.h"
+#include "conf/ConfigManager.h"
+
+
+
+bool ShipControlDeviceImplementation::launchShip(CreatureObject* player, const String& zoneName, const Vector3& position) {
+	// Infinity: Block ship launch when JTL is disabled
+	if (!ConfigManager::instance()->isJtlEnabled()) {
+		return false;
+	}
+
+	auto ship = controlledObject.get().castTo<ShipObject*>();
+
+	if (ship == nullptr) {
+		return false;
+	}
+
+	auto zoneServer = getZoneServer();
+
+	if (zoneServer ==  nullptr)
+		return false;
+
+	Zone* zone = zoneServer->getZone(zoneName);
+
+	if (zone == nullptr || !zone->isSpaceZone())
+		return false;
+
+	SpaceZone* spaceZone = cast<SpaceZone*>(zone);
+
+	if (spaceZone == nullptr)
+		return false;
+
+	Locker sLock(ship, _this.getReferenceUnsafeStaticCast());
+
+	ship->initializePosition(position.getX(), position.getZ(), position.getY());
+	ship->setDirection(1,0,0,0);
+	ship->setMovementCounter(0);
+
+	ship->clearPlayersOnBoard();
+
+	// Infinity: Reset component efficiency and faction before launch (LAUNCH-2)
+	// Without this, ships carry degraded efficiency from previous flights
+	// and faction is set to ground CRC instead of squadron-based space faction
+	ship->resetEfficiency();
+	ship->resetShipFaction();
+
+	if (spaceZone->transferObject(ship, -1, true)) {
+		ship->setFactionStatus(player->getFactionStatus());
+		ship->scheduleRecovery();
+
+		if (player->isInvulnerable()) {
+			ship->setOptionBit(OptionBitmask::INVULNERABLE, false);
+		} else {
+			ship->clearOptionBit(OptionBitmask::INVULNERABLE, false);
+		}
+
+		updateStatus(true, true);
+
+		return true;
+	}
+
+	return false;
+}
+
+void ShipControlDeviceImplementation::fillObjectMenuResponse(ObjectMenuResponse* menuResponse, CreatureObject* player) {
+	if (player == nullptr)
+		return;
+
+	// Name Ship
+	menuResponse->addRadialMenuItem(50, 3, "@sui:rename_ship"); // Rename Ship
+
+	// Launch and Land from datapad for testing
+	auto ghost = player->getPlayerObject();
+
+	if (ghost == nullptr || !ghost->hasGodMode()) {
+		return;
+	}
+
+	// Infinity: Hide launch/land options when JTL is disabled
+	if (!ConfigManager::instance()->isJtlEnabled()) {
+		return;
+	}
+
+	auto ship = controlledObject.get().castTo<ShipObject*>();
+
+	if (ship == nullptr) {
+		return;
+	}
+
+	auto root = player->getRootParent();
+
+	if (root != nullptr && root->isShipObject() && root != ship) {
+		return;
+	}
+
+	auto zoneServer = ServerCore::getZoneServer();
+
+	if (zoneServer == nullptr) {
+		return;
+	}
+
+	if (isShipLaunched()) {
+		String zoneName = StringIdManager::instance()->getStringId("@planet_n:" + storedZoneName).toString();
+		menuResponse->addRadialMenuItem(LANDSHIP, 3, "Land Ship: " + parkingLocation + ", " + zoneName);
+	} else {
+		menuResponse->addRadialMenuItem(LAUNCHSHIP, 3, "Launch Ship");
+
+		for (int i = 0; i < zoneServer->getSpaceZoneCount(); ++i) {
+			auto zone = zoneServer->getSpaceZone(i);
+
+			if (zone == nullptr) {
+				continue;
+			}
+
+			menuResponse->addRadialMenuItemToRadialID(LAUNCHSHIP, 1 + LAUNCHSHIP + i, 3, "@planet_n:" + zone->getZoneName());
+		}
+	}
+}
+
+int ShipControlDeviceImplementation::handleObjectMenuSelect(CreatureObject* player, byte selectedID) {
+	if (player == nullptr)
+		return 0;
+
+	auto ship = controlledObject.get().castTo<ShipObject*>();
+
+	if (ship == nullptr) {
+		return 1;
+	}
+
+	auto zoneServer = ServerCore::getZoneServer();
+
+	if (zoneServer == nullptr) {
+		return 1;
+	}
+
+	// Name Ship
+	if (selectedID == 50) {
+		auto shipManager = ShipManager::instance();
+
+		if (shipManager == nullptr)
+			return 1;
+
+		shipManager->promptNameShip(player, _this.getReferenceUnsafeStaticCast());
+	} else if (isShipLaunched()) {
+		if (selectedID == LANDSHIP) {
+			auto zone = zoneServer->getZone(storedZoneName);
+
+			if (zone == nullptr) {
+				return 1;
+			}
+
+			StoreShipTask* task = new StoreShipTask(player, _this.getReferenceUnsafeStaticCast(), storedZoneName, storedPosition);
+
+			if (task != nullptr)
+				task->execute();
+
+			return isShipLaunched() ? 1 : 0;
+		}
+	} else {
+		if (selectedID > LAUNCHSHIP) {
+			int spaceZoneIndex = selectedID - LAUNCHSHIP - 1;
+			int spaceZoneCount = zoneServer->getSpaceZoneCount();
+
+			auto zone = (spaceZoneIndex < spaceZoneCount) ? zoneServer->getSpaceZone(spaceZoneIndex) : nullptr;
+
+			if (zone == nullptr) {
+				return 1;
+			}
+
+			Vector<uint64> dummyVec;
+
+			LaunchShipTask* launchTask = new LaunchShipTask(player, _this.getReferenceUnsafeStaticCast(), dummyVec);
+
+			if (launchTask != nullptr)
+				launchTask->execute();
+
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+bool ShipControlDeviceImplementation::canBeTradedTo(CreatureObject* player, CreatureObject* receiver, int numberInTrade) {
+	if (player == nullptr || receiver == nullptr)
+		return false;
+
+	ManagedReference<SceneObject*> datapad = receiver->getSlottedObject("datapad");
+
+	if (datapad == nullptr)
+		return false;
+
+	ZoneServer* zoneServer = player->getZoneServer();
+
+	if (zoneServer == nullptr)
+		return false;
+
+	PlayerManager* playerManager = zoneServer->getPlayerManager();
+
+	if (playerManager == nullptr)
+		return false;
+
+	int totalShips = numberInTrade;
+	int pobShips = 0;
+	int maxStoredShips = playerManager->getBaseStoredShips();
+
+	for (int i = 0; i < datapad->getContainerObjectsSize(); i++) {
+		Reference<SceneObject*> obj =  datapad->getContainerObject(i).castTo<SceneObject*>();
+
+		if (obj == nullptr)
+			continue;
+
+		if (obj->isShipControlDevice()) {
+			totalShips++;
+
+			ShipControlDevice* shipDevice = obj.castTo<ShipControlDevice*>();
+
+			if (shipDevice != nullptr && (shipDevice->getShipType() == ShipManager::POBSHIP))
+				pobShips++;
+		}
+	}
+
+	if (totalShips >= maxStoredShips) {
+		receiver->sendSystemMessage("@space/space_interaction:toomanyships"); // You have too many ships in your datapad already!
+		return false;
+	}
+
+	if (pobShips >= 1 && getShipType() == ShipManager::POBSHIP) {
+		receiver->sendSystemMessage("@space/space_interaction:too_many_pobs"); // You cannot launch another ship with an interior. Empty out one of your other ships and you may take off with this ship.
+		return false;
+	}
+
+	return true;
+}
+
+int ShipControlDeviceImplementation::canBeDestroyed(CreatureObject* player) {
+	if (player == nullptr)
+		return 1;
+
+	auto ship = controlledObject.get().castTo<ShipObject*>();
+
+	if (ship == nullptr) {
+		return 1;
+	}
+
+	auto owner = ship->getOwner().get();
+
+	if (owner == nullptr) {
+		return 1;
+	}
+
+	if (isShipLaunched()) {
+		owner->sendSystemMessage("You must land your ship before it can be destroyed.");
+		return 1;
+	} else if (ship->isPobShip()) {
+		auto pobShip = ship->asPobShip();
+
+		if (pobShip != nullptr && pobShip->getCurrentNumberOfPlayerItems() > 0) {
+			owner->sendSystemMessage("You must remove all of your items from your ship before it can be destroyed.");
+			return 1;
+		}
+	}
+
+	return IntangibleObjectImplementation::canBeDestroyed(player);
+}
+
+void ShipControlDeviceImplementation::destroyObjectFromDatabase(bool destroyContainedObjects) {
+	// This should never be called except possibly on character deletion with a ship launched. The ship will handle removing all the players
+	if (isShipLaunched()) {
+		auto ship = getControlledObject();
+
+		if (ship == nullptr) {
+			IntangibleObjectImplementation::destroyObjectFromDatabase(destroyContainedObjects);
+			return;
+		}
+
+		Locker clock(ship, _this.getReferenceUnsafeStaticCast());
+
+		ship->destroyObjectFromDatabase(true);
+		ship->destroyObjectFromWorld(true);
+	}
+
+	IntangibleObjectImplementation::destroyObjectFromDatabase(destroyContainedObjects);
+}
+
+// The control device needs to be locked as well as the player coming into this function
+void ShipControlDeviceImplementation::setStoredLocationData(CreatureObject* player) {
+	if (player == nullptr)
+		return;
+
+	auto ghost = player->getPlayerObject();
+
+	if (ghost == nullptr) {
+		return;
+	}
+
+	auto ship = controlledObject.get().castTo<ShipObject*>();
+
+	if (ship == nullptr) {
+		return;
+	}
+
+	auto zone = player->getZone();
+
+	if (zone == nullptr) {
+		return;
+	}
+
+	auto planetManager = zone->getPlanetManager();
+
+	if (planetManager == nullptr) {
+		return;
+	}
+
+	auto travelPoint = planetManager->getNearestPlanetTravelPoint(player->getWorldPosition(), 128.f);
+
+	if (travelPoint == nullptr) {
+		return;
+	}
+
+	Vector3 position = travelPoint->getArrivalPosition();
+	String pointName = travelPoint->getPointName();
+	String zoneName = zone->getZoneName();
+
+	float z = CollisionManager::getWorldFloorCollision(position.getX(), position.getY(), position.getZ(), zone, true);
+	position.setZ(z);
+
+	storedPosition = position;
+	parkingLocation = pointName;
+	storedZoneName = zoneName;
+
+	ghost->setSpaceLaunchLocation(position);
+	ghost->setSpaceLaunchCityName(pointName);
+	ghost->setSpaceLaunchZone(zoneName);
+
+	// Infinity: Also save launch point on the ship itself (LAUNCH-1)
+	// PobShipObject::removeAllPlayersFromShip() reads launch point from the ship
+	// to determine where to send passengers when ship is destroyed/stored
+	auto controlledObject = getControlledObject();
+	if (controlledObject != nullptr) {
+		auto ship = controlledObject->asShipObject();
+		if (ship != nullptr) {
+			Locker slocker(ship, player);
+			ship->setSpaceLaunchLocation(position);
+			ship->setSpaceLaunchCityName(pointName);
+			ship->setSpaceLaunchZone(zoneName);
+		}
+	}
+}
+
+Vector3 ShipControlDeviceImplementation::getStoredPosition(bool randomPosition) {
+	Vector3 random = randomPosition ? Vector3(System::random(10) - 5, System::random(10) - 5, 0) : Vector3::ZERO;
+	return storedPosition + random;
+}
+
+void ShipControlDeviceImplementation::fillAttributeList(AttributeListMessage* alm, CreatureObject* object) {
+	ControlDeviceImplementation::fillAttributeList(alm, object);
+}
+
+bool ShipControlDeviceImplementation::isShipLaunched() {
+	auto ship = controlledObject.get().castTo<ShipObject*>();
+
+	if (ship == nullptr)
+		return false;
+
+	return ship->isShipLaunched();
+}

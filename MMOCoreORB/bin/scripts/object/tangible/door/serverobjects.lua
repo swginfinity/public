@@ -1,0 +1,1 @@
+includeFile("tangible/door/thm_kash_cave_myyydril_door.lua")

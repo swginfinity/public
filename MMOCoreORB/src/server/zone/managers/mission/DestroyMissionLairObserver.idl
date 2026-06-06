@@ -1,0 +1,37 @@
+/*
+				Copyright <SWGEmu>
+		See file COPYING for copying conditions.*/
+
+package server.zone.objects.mission;
+
+import server.zone.managers.creature.LairObserver;
+import server.zone.objects.tangible.LairObject;
+import engine.log.Logger;
+
+include server.zone.objects.tangible.TangibleObject;
+
+class DestroyMissionLairObserver extends LairObserver {
+	public static final int BABY_SPAWN_CHANCE = 1000;
+
+	public DestroyMissionLairObserver() {
+		super();
+
+		Logger.setLoggingName("DestroyMissionLairObserver");
+	}
+
+	public native void checkForHeal(TangibleObject lair, TangibleObject attacker, boolean forceNewUpdate = false);
+
+	@arg1preLocked
+	public native boolean checkForNewSpawns(TangibleObject lair, TangibleObject attacker, boolean forceSpawn = false);
+
+	@arg1preLocked
+	public abstract native void spawnLairMobile(LairObject lair, int spawnNumber, final string templateToSpawn, boolean spawnPassive = true);
+
+	// Infinity: Destroy mission lairs have half the boss mobile chance of wild lairs
+	@arg1preLocked
+	public native void checkForBossSpawn(TangibleObject lair, TangibleObject attacker);
+
+	public boolean isDestroyMissionLairObserver() {
+		return true;
+	}
+}

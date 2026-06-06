@@ -1,0 +1,36 @@
+/*
+				Copyright <SWGEmu>
+		See file COPYING for copying conditions.
+*/
+
+package server.zone.objects.creature.conversation;
+
+import server.zone.objects.creature.conversation.ConversationObserver;
+include server.zone.objects.creature.conversation.ConversationTemplate;
+import server.zone.objects.creature.CreatureObject;
+import server.zone.objects.scene.SceneObject;
+include server.zone.objects.creature.conversation.ConversationScreen;
+include server.zone.managers.director.DirectorManager;
+include server.zone.objects.scene.SceneObject;
+
+class LuaConversationObserver extends ConversationObserver {
+	public LuaConversationObserver(unsigned int convoTemplateCRC) {
+		super(convoTemplateCRC);
+	}
+
+	// Infinity: Changed conversingNPC from CreatureObject to SceneObject to support SpaceStationObject
+	@local
+	public ConversationScreen getNextConversationScreen(CreatureObject conversingPlayer, int selectedOption, SceneObject conversingNPC) {
+		ConversationTemplate conversationTemplate = getConversationTemplate();
+
+		return DirectorManager.instance().getNextConversationScreen(conversationTemplate.getLuaClassHandler(), conversationTemplate, conversingPlayer, selectedOption, conversingNPC);
+	}
+
+	// Infinity: Changed conversingNPC from CreatureObject to SceneObject to support SpaceStationObject
+	@local
+	public ConversationScreen runScreenHandlers(CreatureObject conversingPlayer, SceneObject conversingNPC, int selectedOption, ConversationScreen conversationScreen) {
+		ConversationTemplate conversationTemplate = getConversationTemplate();
+
+		return DirectorManager.instance().runScreenHandlers(conversationTemplate.getLuaClassHandler(),conversationTemplate, conversingPlayer, conversingNPC, selectedOption, conversationScreen);
+	}
+}

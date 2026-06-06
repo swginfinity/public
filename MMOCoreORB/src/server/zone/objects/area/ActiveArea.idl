@@ -1,0 +1,381 @@
+/*
+				Copyright <SWGEmu>
+		See file COPYING for copying conditions.*/
+
+package server.zone.objects.area;
+
+include server.zone.objects.scene.SceneObject;
+include server.zone.objects.area.areashapes.AreaShape;
+include system.util.Vector;
+
+import engine.util.u3d.Vector3;
+import engine.util.u3d.Vector4;
+import server.zone.Zone;
+import server.zone.objects.pathfinding.NavArea;
+import server.zone.objects.region.Region;
+
+@mock
+@json
+class ActiveArea extends SceneObject {
+	protected unsigned long cellObjectID;
+	protected AreaShape areaShape;
+
+	@dereferenced
+	protected transient Vector<SceneObject> attachedScenery;
+
+	protected unsigned int areaFlags;
+
+	protected string areaName;
+
+	public static final int UNDEFINEDAREA = 0x000000;
+	public static final int SPAWNAREA = 0x000001;
+	public static final int NOSPAWNAREA = 0x000002;
+	public static final int WORLDSPAWNAREA = 0x000004;
+	public static final int NOWORLDSPAWNAREA = 0x000008;
+	public static final int NOBUILDZONEAREA = 0x000010;
+	public static final int CAMPINGAREA = 0x000020;
+	public static final int CITY = 0x000040;
+	public static final int NAVAREA = 0x000080;
+	public static final int NAMEDREGION = 0x000100;
+	public static final int LOCKEDAREA = 0x000200;
+
+	public static final int NOCOMBATAREA = 0x000400;
+	public static final int NODUELAREA = 0x000800;
+	public static final int PVPAREA = 0x001000;
+	public static final int OVERTAREA = 0x002000;
+	public static final int REBELAREA = 0x004000;
+	public static final int IMPERIALAREA = 0x008000;
+	public static final int NOPETAREA = 0x010000;
+
+	public static final int CIRCLE = 1;
+	public static final int RECTANGLE = 2;
+	public static final int RING = 3;
+	public static final int SPHERE = 4;
+	public static final int CUBOID = 5;
+
+	public ActiveArea() {
+		cellObjectID = 0;
+
+		areaShape = null;
+
+		areaName = "";
+
+		areaFlags = 0;
+
+		Logger.setLoggingName("ActiveArea");
+	}
+
+	/**
+	 * Sends the necessary messages to player in order to create this object
+	 * @pre { this object is locked }
+	 * @post { this object is locked, player received this object }
+	 * @param player SceneObject that will receive the messages
+	 * @param doClose if true a SceneObjectCloseMessage is sent to finish the object
+	 */
+	@dirty
+	public native void sendTo(SceneObject player, boolean doClose, boolean forceLoadContainer = true) {
+	}
+
+	@mock
+	@dirty
+	public native abstract void enqueueEnterEvent(SceneObject obj);
+
+	@mock
+	@dirty
+	public native abstract void enqueueExitEvent(SceneObject obj);
+
+	@dirty
+	public native abstract void notifyEnter(SceneObject object);
+
+	@dirty
+	public native abstract void notifyExit(SceneObject object);
+
+	public native void sendDebugMessage(SceneObject creature, boolean entry);
+
+	public native void setZone(Zone zone);
+
+	@read
+	public native boolean containsPoint(float x, float y, unsigned long cellid);
+
+	@read
+	public abstract native boolean containsPoint(float x, float y);
+
+	@read
+	public native boolean containsPoint(float x, float z, float y, unsigned long cellid);
+
+	@read
+	public abstract native boolean containsPoint(float x, float z, float y);
+
+	@read
+	public native boolean intersectsWith(ActiveArea area);
+
+	@dirty
+	@local
+	public abstract NavArea asNavArea() {
+		return null;
+	}
+
+	@dirty
+	@local
+	public abstract Region asRegion() {
+		return null;
+	}
+
+	@preLocked
+	public native void setRegionFlags(unsigned int flags) {
+		areaFlags = flags;
+	}
+
+	@preLocked
+	public void setAreaName(final string name) {
+		areaName = name;
+	}
+
+	@dirty
+	public boolean isActiveArea() {
+		return true;
+	}
+
+	@dirty
+	public abstract boolean isRegion() {
+		return false;
+	}
+
+	@read
+	public abstract boolean isNavArea() {
+		return false;
+	}
+
+	@dirty
+	public abstract boolean isCampArea() {
+		return false;
+	}
+
+	@read
+	public boolean isUndefinedRegion() {
+		return areaFlags & UNDEFINEDAREA;
+	}
+
+	@read
+	public boolean isCityRegion() {
+		return  areaFlags & CITY;
+	}
+
+	@read
+	public boolean isSpawnArea() {
+		return areaFlags & SPAWNAREA;
+	}
+
+	@read
+	public boolean isNoSpawnArea() {
+		return areaFlags & NOSPAWNAREA;
+	}
+
+	@read
+	public boolean isWorldSpawnArea() {
+		return areaFlags & WORLDSPAWNAREA;
+	}
+
+	@read
+	public boolean isNoWorldSpawnArea() {
+		return areaFlags & NOWORLDSPAWNAREA;
+	}
+
+	@read
+	public boolean isNoBuildZone() {
+		return areaFlags & NOBUILDZONEAREA;
+	}
+
+	@read
+	public boolean isCampingArea() {
+		return areaFlags & CAMPINGAREA;
+	}
+
+	@read
+	public boolean shouldBuildNavmesh() {
+		return areaFlags & NAVAREA;
+	}
+
+	@read
+	public boolean isNamedRegion() {
+		return areaFlags & NAMEDREGION;
+	}
+
+	@read
+	public boolean isLockedArea() {
+		return areaFlags & LOCKEDAREA;
+	}
+
+	@read
+	public boolean isPvpArea() {
+		return areaFlags & PVPAREA;
+	}
+
+	@read
+	public boolean isOvertArea() {
+		return areaFlags & OVERTAREA;
+	}
+
+	@read
+	public boolean isRebelArea() {
+		return areaFlags & REBELAREA;
+	}
+
+	@read
+	public boolean isImperialArea() {
+		return areaFlags & IMPERIALAREA;
+	}
+
+	@read
+	public boolean isNoCombatArea() {
+		return areaFlags & NOCOMBATAREA;
+	}
+
+	@read
+	public boolean isNoDuelArea() {
+		return areaFlags & NODUELAREA;
+	}
+
+	@read
+	public boolean isNoPetArea() {
+		return areaFlags & NOPETAREA;
+	}
+
+	@read
+	public boolean isRectangularAreaShape() {
+		return areaShape && areaShape.isRectangularAreaShape();
+	}
+
+	@read
+	public boolean isCuboidAreaShape() {
+		return areaShape && areaShape.isCuboidAreaShape();
+	}
+
+	@read
+	public boolean isSphereAreaShape() {
+		return areaShape && areaShape.isSphereAreaShape();
+	}
+
+	@preLocked
+	public native void addAreaFlag(unsigned int flag);
+
+	@preLocked
+	public native void removeAreaFlag(unsigned int flag);
+
+	@preLocked
+	public void setRadius(float r) {
+		if (areaShape && r < areaShape.getRadius()) {
+			r = areaShape.getRadius();
+		}
+
+		super.setRadius(r);
+	}
+
+	@preLocked
+	public void setCellObjectID(unsigned long celloid) {
+		cellObjectID = celloid;
+	}
+
+	@preLocked
+	public void setAreaShape(AreaShape area) {
+		areaShape = area;
+
+		if (areaShape) {
+			setRadius(areaShape.getRadius());
+		}
+	}
+
+	@read
+	public int getAreaFlags() {
+		return areaFlags;
+	}
+
+	@dereferenced
+	@local
+	@read
+	public native Vector3 getAreaCenter();
+
+	@read
+	public float getRadius2() {
+		float radius = getRadius();
+
+		return radius * radius;
+	}
+
+	@read
+	public float getRadius() {
+		if (areaShape) {
+			return areaShape.getRadius();
+		} else {
+			return super.getRadius();
+		}
+	}
+
+	@read
+	public float getHeight() {
+		if (areaShape) {
+			return areaShape.getHeight();
+		}
+
+		return 0.f;
+	}
+
+	@read
+	public float getWidth() {
+		if (areaShape) {
+			return areaShape.getWidth();
+		}
+
+		return 0.f;
+	}
+
+	@read
+	public float getLength() {
+		if (areaShape) {
+			return areaShape.getLength();
+		}
+
+		return 0.f;
+	}
+
+	@dereferenced
+	@local
+	@read
+	public native Vector4 getRectangularDimensions();
+
+	@dereferenced
+	@local
+	@read
+	public native Vector3 getCuboidDimensions();
+
+	@read
+	public unsigned long getCellObjectID() {
+		return cellObjectID;
+	}
+
+	@read
+	public AreaShape getAreaShape() {
+		return areaShape;
+	}
+
+	@read
+	public string getAreaName() {
+		return areaName;
+	}
+
+	@preLocked
+	public void attachScenery(SceneObject scene) {
+		attachedScenery.add(scene);
+	}
+
+	public native void initializeChildObject(SceneObject controllerObject);
+
+	@local
+	public native boolean ejectFromArea(SceneObject object);
+
+	//Infinity:  Custom includes
+	@read
+	public boolean isCircularAreaShape() {
+		return areaShape && areaShape.isCircularAreaShape();
+	}
+}

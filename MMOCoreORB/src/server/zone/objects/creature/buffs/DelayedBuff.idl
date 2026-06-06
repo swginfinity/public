@@ -1,0 +1,111 @@
+/*
+				Copyright <SWGEmu>
+		See file COPYING for copying conditions.*/
+
+package server.zone.objects.creature.buffs;
+
+import server.zone.objects.creature.CreatureObject;
+import server.zone.objects.creature.buffs.Buff;
+include server.zone.objects.creature.buffs.BuffType;
+include server.zone.managers.object.ObjectManager;
+import server.zone.objects.tangible.consumable.DelayedBuffObserver;
+include system.util.Vector;
+//Infinity:  Custom includes for idl logging
+//import engine.log.Logger;
+import system.lang.String;
+
+@json
+class DelayedBuff extends Buff {
+	protected int usesRemaining;
+	protected CreatureObject player;
+	protected transient DelayedBuffObserver observer;
+
+	@dereferenced
+	protected Vector<int> eventTypes;
+
+	public DelayedBuff(CreatureObject creo, unsigned int buffcrc, int effectCount) {
+		super(creo, buffcrc, 3600, BuffType.FOOD);
+
+		usesRemaining = effectCount;
+		player = creo;
+	}
+
+	@local
+	@preLocked
+	public void init(Vector<int> events) {
+		observer = new DelayedBuffObserver(this);
+
+		//Infinity:  Let's fix old Havla where MEDPACKUSED was 53 instead of 54
+		for(int i = 0; i < events.size(); ++i) {
+			int eventType = events.get(i);
+			if (eventType == 53) {
+				eventType = 54;
+			}
+			eventTypes.add(eventType);
+		}
+	}
+
+	//Duration buffs don't apply the modifiers to the creature. They are referenced when used.
+	@preLocked
+	public void activate() {
+		super.activate(true);
+		addObservers();
+	}
+
+	@preLocked
+	public void deactivate() {
+		super.deactivate(true);
+		dropObservers();
+	}
+
+	@preLocked
+	public void useCharge() {
+		usesRemaining = usesRemaining - 1;
+
+		player.sendAttributeListTo(player);
+
+		if (usesRemaining < 1) {
+			player.removeBuff(this);
+		}
+	}
+
+	@preLocked
+	public void setUsesRemaining(int uses) {
+		usesRemaining = uses;
+
+		player.sendAttributeListTo(player);
+
+		if (usesRemaining < 1) {
+			player.removeBuff(this);
+		}
+	}
+
+	@preLocked
+	public void initializeBuffObservers() {
+		addObservers();
+	}
+
+	private void addObservers() {
+		if (!player) {
+			return;
+		}
+
+		if (!observer) {
+			observer = new DelayedBuffObserver(this);
+		}
+
+		for(int i = 0; i < eventTypes.size(); ++i) {
+			player.registerObserver(eventTypes.get(i), observer);
+		}
+	}
+
+	private void dropObservers() {
+		if (!player || !observer) {
+			return;
+		}
+
+		for(int i = 0; i < eventTypes.size(); ++i) {
+			player.dropObserver(eventTypes.get(i), observer);
+		}
+	}
+}

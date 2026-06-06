@@ -1,0 +1,5 @@
+object_draft_schematic_armor_cybernetic_appearance_forearm_r = object_draft_schematic_armor_shared_cybernetic_appearance_forearm_r:new {
+
+}
+
+ObjectTemplates:addTemplate(object_draft_schematic_armor_cybernetic_appearance_forearm_r, "object/draft_schematic/armor/cybernetic_appearance_forearm_r.iff")

@@ -1,0 +1,4 @@
+object_building_general_rori_hyperdrive_research_facility_dark = object_building_general_shared_rori_hyperdrive_research_facility_dark:new {
+
+}
+ObjectTemplates:addTemplate(object_building_general_rori_hyperdrive_research_facility_dark, "object/building/general/rori_hyperdrive_research_facility_dark.iff")

@@ -1,0 +1,6 @@
+
+object_tangible_component_vehicle_base_vehicle_base = object_tangible_component_vehicle_base_shared_vehicle_base:new {
+
+}
+
+ObjectTemplates:addTemplate(object_tangible_component_vehicle_base_vehicle_base, "object/tangible/component/vehicle/base/vehicle_base.iff")

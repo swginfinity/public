@@ -1,0 +1,5 @@
+object_draft_schematic_armor_pvp_spec_ops_imperial_armor_dye_kit = object_draft_schematic_armor_shared_pvp_spec_ops_imperial_armor_dye_kit:new {
+
+}
+
+ObjectTemplates:addTemplate(object_draft_schematic_armor_pvp_spec_ops_imperial_armor_dye_kit, "object/draft_schematic/armor/pvp_spec_ops_imperial_armor_dye_kit.iff")

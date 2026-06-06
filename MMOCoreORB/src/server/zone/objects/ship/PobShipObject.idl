@@ -1,0 +1,293 @@
+/*
+				Copyright <SWGEmu>
+		See file COPYING for copying conditions.
+*/
+
+package server.zone.objects.ship;
+
+import engine.log.Logger;
+import server.zone.objects.scene.SceneObject;
+import server.zone.objects.creature.CreatureObject;
+import system.util.Vector;
+import engine.util.u3d.Vector3;
+import server.zone.Zone;
+import server.zone.objects.ship.ai.ShipAiAgent;
+import system.thread.ReadWriteLock;
+import server.zone.objects.tangible.ship.interiorComponents.ShipInteriorComponent;
+
+include server.zone.objects.ship.ShipObject;
+import server.zone.objects.ship.events.PobCellDotTask;
+include system.lang.ref.Reference;
+include server.zone.TreeEntry;
+include templates.SharedObjectTemplate;
+include templates.tangible.ship.SharedShipObjectTemplate;
+include system.util.VectorMap;
+include server.zone.objects.ship.PlayerLaunchPoints;
+include server.zone.objects.ship.DamageSparkLocations;
+include server.zone.objects.cell.CellObject;
+include server.zone.objects.ship.ShipPermissionList;
+include server.zone.objects.tangible.TangibleObject;
+
+
+class PobShipObject extends ShipObject {
+	public static final unsigned int MAX_PLAYER_ITEMS = 100;
+
+	public static final int PLASMA_CONDUIT = -1;
+
+	public static final short DAMAGE_LOW = 1;
+	public static final short DAMAGE_HIGH = 2;
+
+	public static final int CELL_DOT_TICK = 2; // In seconds
+	public static final int CELL_DOT_MULTI = 100.f;
+
+	@dereferenced
+	protected VectorMap<string, CellObject> cellNameMap;
+
+	@dereferenced
+	protected VectorMap<unsigned int, CellObject> cells;
+
+	@dereferenced
+	protected PlayerLaunchPoints launchPoints;
+
+	@dereferenced
+	protected ShipPermissionList shipPermissionList;
+
+	protected SceneObject shipLootBox;
+
+	@dereferenced
+	protected DamageSparkLocations sparkLocations;
+
+	@dereferenced
+	protected Vector<unsigned long> plasmaAlarms;
+
+	@dereferenced
+	protected Vector<ShipInteriorComponent> interiorComponents;
+
+	@dereferenced
+	protected Vector<ShipInteriorComponent> plasmaConduits;
+
+	@dereferenced
+	protected transient ReadWriteLock intComponentsMutex;
+
+	@dereferenced
+	@local
+	protected VectorMap<unsigned long, int> damagedInteriorComponents;
+
+	@dereferenced
+	protected VectorMap<int, unsigned int> plasmaConduitTypes;
+
+	@rawTemplate(value = "uint32, float")
+	@dereferenced
+	protected VectorMap componentDamageVariables;
+
+	@dereferenced
+	protected transient Reference<PobCellDotTask> cellDotTask;
+
+	public PobShipObject() {
+		Logger.setLoggingName("PobShipObject");
+	}
+
+	public native void notifyLoadFromDatabase();
+
+	@local
+	public native abstract void loadTemplateData(SharedObjectTemplate templateData);
+
+	@preLocked
+	public native void createChildObjects();
+
+	@preLocked
+	public abstract native void destroyObjectFromDatabase(boolean destroyContainedObjects = false);
+
+	@local
+	public native void notifyInsert(TreeEntry obj);
+
+	public native void notifyInsertToZone(Zone zone);
+
+	public native int notifyObjectInsertedToChild(SceneObject object, SceneObject child, SceneObject oldParent);
+	public native int notifyObjectRemovedFromChild(SceneObject object, SceneObject child);
+
+	@dirty
+	public native abstract void onEnter(CreatureObject player, unsigned long skipCellID = 0);
+
+	@local
+	public native void updateZone(boolean lightUpdate, boolean sendPackets = true);
+
+	public native abstract void sendTo(SceneObject player, boolean doClose, boolean forceLoadContainer = true);
+
+	@dirty
+	@local
+	public native void notifyPositionUpdate(TreeEntry entry);
+
+	/**
+	 * Sends the contained non slotted objects to the specified player
+	 * @pre { this object is locked }
+	 * @post { this object is locked, player received the container objects }
+	 * @param player SceneObject that will receive the objects
+	 */
+	@dirty
+	public native void sendContainerObjectsTo(SceneObject player, boolean forceLoad);
+
+	/**
+	 * Updates the cell permissions to the player based on the players permission in the ShipPermissionList.
+	 * @param creature The player to update cell permissions to.
+	 */
+	public native void updateCellPermissionsTo(CreatureObject creature);
+
+	/**
+	 * Checks if the player is on the admin list.
+	 * @param player The creo of the player to check for admin permission.
+	 * @return Returns true if the player has admin permissions.
+	 */
+	@read
+	public native boolean isOnAdminList(CreatureObject player);
+
+	/**
+	 * Checks if the player is the on the specified permission list.
+	 * @param listName The name of the list to check.
+	 * @param player The creo of the player to check.
+	 * @return Returns true if the player was found on the list.
+	 */
+	@read
+	public native boolean isOnPermissionList(final string listName, CreatureObject player);
+
+	/**
+	 * Checks if the player/guild is on the admin list.
+	 * For PermissionsListModify command
+	 * @param objectID The oid of the player/guild to check for admin permission.
+	 * @return Returns true if the player/guild has admin permissions.
+	 */
+	@read
+	public boolean isOnAdminList(final unsigned long objectID) {
+		return shipPermissionList.isOnPermissionList("ADMIN", objectID);
+	}
+
+	public native void togglePlasmaAlarms();
+
+	public native void triggerInteriorDamage(int hitType, float damageVar);
+
+	public native void doInteriorEffect(Zone zone, CellObject cell, string randomCell, int count, int chance, @dereferenced  Vector<string> clientEffects, @dereferenced  Vector<float> damageEffects, int conduitChance);
+
+	@preLocked
+	public native boolean triggerCellDamageOverTime();
+
+	@preLocked
+	public native void checkPlasmaConduits();
+
+	@preLocked
+	public native void setComponentDamageVariable(unsigned int componentSlot);
+
+	@preLocked
+	public native void applyPobComponentDot();
+
+	@dirty
+	@nativeStub
+	@local
+	public native PobShipObject asPobShip();
+
+	@dirty
+	public boolean isPobShip() {
+		return true;
+	}
+
+	@local
+	@dereferenced
+	@dirty
+	public native string getRandomLaunchCell();
+
+	@local
+	@dereferenced
+	@dirty
+	public native Vector3 getLaunchPointInCell(final string cellName);
+
+	@dirty
+	public native int getCurrentNumberOfPlayerItems();
+
+	@dirty
+	public abstract unsigned int getMaximumNumberOfPlayerItems() {
+		return MAX_PLAYER_ITEMS;
+	}
+
+	/**
+	 * Loops through all the cells, destroying items from the database that aren't contained in the child objects vector.
+	 */
+	public native void destroyAllPlayerItems();
+
+	@preLocked
+	@arg1preLocked
+	public abstract native void awardLootItems(ShipAiAgent destructedShip, int payout);
+
+	@dirty
+	public CellObject getCell(int idx) {
+		return cells.get(idx);
+	}
+
+	@dirty
+	public CellObject getCell(final string name) {
+		return cellNameMap.get(name);
+	}
+
+	public int getTotalCellNumber() {
+		return cells.size();
+	}
+
+	@dirty
+	public void sendPermissionListTo(CreatureObject creature, final string listName) {
+		shipPermissionList.sendTo(creature, listName);
+	}
+
+	public int grantPermission(final string listName, final unsigned long objectID) {
+		return shipPermissionList.grantPermission(listName, objectID);
+	}
+
+	public int revokePermission(final string listName, final unsigned long objectID) {
+		return shipPermissionList.revokePermission(listName, objectID);
+	}
+
+	public int togglePermission(final string listName, final unsigned long objectID) {
+		return shipPermissionList.togglePermission(listName, objectID);
+	}
+
+	@read
+	public boolean hasPermissionList(final string listName) {
+		return shipPermissionList.containsList(listName);
+	}
+
+	@read
+	public boolean isPermissionListFull(final string listName) {
+		return shipPermissionList.isListFull(listName);
+	}
+
+	/**
+	 * Checks if the player/guild is the on the specified permission list.
+	 * For PermissionsListModify command
+	 * @param listName The name of the list to check.
+	 * @param objectID The oid of the player/guild to check.
+	 * @return Returns true if the player/guild was found on the list.
+	 */
+	@read
+	public boolean isOnPermissionList(final string listName, final unsigned long objectID) {
+		return shipPermissionList.isOnPermissionList(listName, objectID);
+	}
+
+	@read
+	public int getTotalPlasmaAlarms() {
+		return plasmaAlarms.size();
+	}
+
+	public unsigned long getPlasmaAlarms(int idx) {
+		return plasmaAlarms.get(idx);
+	}
+
+	public native void addDamagedInteriorComponent(unsigned long interiorComponentID, int type);
+
+	public native void removeDamagedInteriorComponent(unsigned long interiorComponentID);
+
+	public native boolean hasActivePlasmaLeaks();
+
+	@preLocked
+	public native void removeAllPlayersFromShip();
+
+	@local
+	@dereferenced
+	public abstract native Vector3 getObjectLocationInShip(SceneObject object, @dereferenced final Vector3 objectPosition);
+}

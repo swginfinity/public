@@ -1,0 +1,5 @@
+object_draft_schematic_armor_crafted_armor_recolor_kit = object_draft_schematic_armor_shared_crafted_armor_recolor_kit:new {
+
+}
+
+ObjectTemplates:addTemplate(object_draft_schematic_armor_crafted_armor_recolor_kit, "object/draft_schematic/armor/crafted_armor_recolor_kit.iff")

@@ -1,0 +1,5 @@
+object_intangible_pet_gaping_spider_hunter_hue = object_intangible_pet_shared_gaping_spider_hunter_hue:new {
+
+}
+
+ObjectTemplates:addTemplate(object_intangible_pet_gaping_spider_hunter_hue, "object/intangible/pet/gaping_spider_hunter_hue.iff")

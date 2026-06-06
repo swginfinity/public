@@ -1,0 +1,24 @@
+/*
+Copyright <SWGEmu>
+See file COPYING for copying conditions.
+*/
+
+package server.zone.objects.ship.components;
+
+import server.zone.objects.tangible.component.Component;
+include server.zone.objects.manufactureschematic.craftingvalues.CraftingValues;
+include server.zone.packets.scene.AttributeListMessage;
+include server.zone.objects.creature.CreatureObject;
+
+class ShipSubComponent extends Component {
+	public ShipSubComponent() {
+		super();
+	}
+
+	@local
+	public native void updateCraftingValues(CraftingValues values, boolean firstUpdate);
+
+	@local
+	@dirty
+	public native void fillAttributeList(AttributeListMessage msg, CreatureObject object);
+}

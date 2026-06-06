@@ -1,0 +1,223 @@
+/*
+				Copyright <SWGEmu>
+		See file COPYING for copying conditions.*/
+
+package server.zone.managers.auction;
+
+import engine.log.Logger;
+import server.zone.ZoneServer;
+import engine.core.ManagedService;
+import server.zone.ZoneServer;
+import server.zone.objects.creature.CreatureObject;
+import server.zone.managers.auction.AuctionsMap;
+import server.zone.objects.auction.AuctionItem;
+import server.zone.objects.scene.SceneObject;
+import system.util.VectorMap;
+include server.zone.packets.auction.AuctionQueryHeadersResponseMessage;
+include server.zone.managers.auction.TerminalListVector;
+include server.zone.managers.auction.AuctionEventsMap;
+include system.util.SynchronizedVectorMap;
+
+@dirty
+class AuctionManager extends ManagedService implements Logger {
+	protected AuctionsMap auctionMap;
+
+	protected ZoneServer zoneServer;
+
+	@dereferenced
+	protected AuctionEventsMap auctionEvents;
+
+	@dereferenced
+	protected VectorMap<SceneObject, string> pendingUIDUpdates;
+
+	@dereferenced
+	protected VectorMap<SceneObject, string> pendingOldUIDUpdates;
+
+	public final static int MAXBAZAARPRICE = 200000;  //Infinity:  Increase from 20K to 200K
+	public final static int MAXSALES = 100; // this only apply to bazaars  Infinity:  25 to 100
+	public final static int SALESFEE = 20;
+	public final static int CHECKEVERY = 60; // Minutes
+
+	public final static int MAXVENDORPRICE = 99999999;
+	public final static int ITEMSPERPAGE = 100;
+
+	public final static int VENDOREXPIREPERIOD = 31536000; // Infinity:  365 days in seconds
+	public final static int COMMODITYEXPIREPERIOD = 7776000;  // Infinity:  90 days in seconds
+	public final static int AUCTIONEXPIREPERIOD = 604800;  // Infinity:  7 days in seconds
+	public final static int VENDOROFFEREXPIREPERIOD = 604800;  // Infinity:  7 days in seconds
+
+	// Location Types
+	public final static int LT_GALAXY = 0;
+	public final static int LT_PLANET = 1;
+	public final static int LT_REGION = 2;
+	public final static int LT_MARKET = 3;
+
+	// Search Types
+	public final static int ST_CATEGORY = 0;
+	public final static int ST_LOCATION = 1;
+	public final static int ST_ALL = 2;
+	public final static int ST_PLAYER_SALES = 3;
+	public final static int ST_PLAYER_BIDS = 4;
+	public final static int ST_PLAYER_STOCKROOM = 5;
+	public final static int ST_VENDOR_OFFERS = 6;
+	public final static int ST_VENDOR_SELLING = 7;
+	public final static int ST_VENDOR_STOCKROOM = 8;
+	public final static int ST_PLAYER_OFFERS_TO_VENDOR = 9;
+
+	private boolean marketEnabled;
+
+	public AuctionManager(ZoneServer server) {
+		zoneServer = server;
+		Logger.setLoggingName("AuctionManager");
+		Logger.setLogging(false);
+		Logger.setGlobalLogging(true);
+		marketEnabled = false;
+		auctionEvents.setNoDuplicateInsertPlan();
+		auctionEvents.setNullValue(null);
+	}
+
+	public native void initialize();
+
+	@local
+	public native int addSaleItem(CreatureObject player, unsigned long objectid, SceneObject vendor, final unicode description, int price, unsigned int duration, boolean auction, boolean premium);
+
+	@local
+	public native AuctionItem createVendorItem(CreatureObject player, SceneObject objectToSell, SceneObject vendor, final unicode description, int price, unsigned int duration, boolean auction, boolean premium);
+
+	@local
+	public native int checkSaleItem(CreatureObject player, SceneObject object, SceneObject vendor, int price, boolean premium, boolean stockroomSale);
+
+	public native void getItemAttributes(CreatureObject player, unsigned long objectid);
+
+	public native void getData(CreatureObject player, int locationType, unsigned long vendorObjectID, int searchType, unsigned int itemCategory, final unicode filterText, int minPrice, int maxPrice, boolean includeEntranceFee, int count, int offset);
+
+	@local
+	public native void getAuctionData(CreatureObject player, SceneObject usedVendor, final string planet, final string region, SceneObject vendor, int screen, unsigned int category, final unicode filterText, int minPrice, int maxPrice, boolean includeEntranceFee, int count, int offset);
+
+	private native void refundAuction(AuctionItem item);
+
+	private native void sendVendorUpdateMail(SceneObject vendor, boolean isEmpty);
+
+	@local
+	public native int checkRetrieve(CreatureObject player, unsigned long objectIdToRetrieve, SceneObject vendor);
+	public native void retrieveItem(CreatureObject player, unsigned long objectid, unsigned long vendorID);
+
+	public native void buyItem(CreatureObject player, unsigned long objectid, int price1, int price2);
+	public native void doAuctionBid(CreatureObject player, AuctionItem item, int price1, int price2);
+	public native void doInstantBuy(CreatureObject player, AuctionItem item);
+	public native int checkBidAuction(CreatureObject player, AuctionItem item, int price1, int price2);
+
+	public native void cancelItem(CreatureObject player, unsigned long objectID);
+
+	@local
+	public native AuctionQueryHeadersResponseMessage fillAuctionQueryHeadersResponseMessage(CreatureObject player, SceneObject vendor, TerminalListVector terminalList, int screen, unsigned int category, final unicode filterText, int minPrice, int maxPrice, boolean includeEntranceFee, int count, int offset);
+
+	public AuctionsMap getAuctionMap() {
+		return auctionMap;
+	}
+
+	public native void checkVendorItems(boolean startupTask = false);
+
+	public native void checkAuctions(boolean startupTask = false);
+
+	@local
+	private native void doAuctionMaint(TerminalListVector items, final string logTag, boolean startupTask);
+
+	public native string getVendorUID(SceneObject vendor);
+
+	@local
+	public native Logger getLogger();
+
+	public synchronized void updateVendorUID(SceneObject vendor, final string oldUID, final string newUID) {
+
+		if(!auctionMap) {
+			pendingUIDUpdates.put(vendor, newUID);
+			pendingOldUIDUpdates.put(vendor, oldUID);
+			return;
+		}
+
+		auctionMap.updateUID(vendor, oldUID, newUID);
+	}
+
+	public synchronized void updateVendorSearch(SceneObject vendor, boolean enabled) {
+		auctionMap.updateVendorSearch(vendor, enabled);
+	}
+
+	public native void expireSale(AuctionItem item);
+	public native void expireBidAuction(AuctionItem item);
+
+	public native void expireAuction(AuctionItem item);
+
+	public native void deleteExpiredSale(AuctionItem item, boolean sendMail = true);
+
+	public boolean isMarketEnabled() {
+		return marketEnabled == true;
+	}
+
+	public synchronized void setMarketEnabled(boolean value) {
+		marketEnabled = value;
+	}
+
+	public native void displayInfo(CreatureObject player);
+	public native void displayPlayerStockroom(CreatureObject player, final string targetName);
+
+	public native void updateAuctionOwner(AuctionItem item, CreatureObject player);
+
+	public native string removeColorCodes(final string name);
+
+	@dirty
+	@local
+	public native boolean checkItemCategory(int category, AuctionItem item);
+
+	@dirty
+	public ZoneServer getZoneServer() {
+		return zoneServer;
+	}
+
+    //Infinity:  Custom function
+    public native void restockVendor(CreatureObject creature, SceneObject vendor);
+
+    // Vendor Pack-Up (Phase 1) primitives. Native impls in
+    // AuctionManagerImplementation.cpp. Also called by Phase 2's house
+    // pack-up for each vendor inside the building (without the VCD wrap).
+    //
+    // prePackVendor: prepare a vendor to be moved into a control device.
+    //   - Toggle suppressUIDRebuild=true on AuctionTerminalDataComponent so
+    //     setInitialized/region-change/notifyContainerChange cascades that
+    //     fire as the parent chain changes do NOT rewrite AuctionsMap entries
+    //     with garbage zone/coords (deep-review C2).
+    //   - Hide vendor from bazaar via updateVendorSearch(vendor, false).
+    //   - Caller (StructureManager) is responsible for moving the vendor's
+    //     SceneObject and for cancelling pending barker/return tasks.
+    public native void prePackVendor(SceneObject vendor);
+
+    // postUnpackVendor: bring a vendor out of dormant state. Caller has
+    // already moved the vendor's SceneObject into the new cell at the
+    // intended coords. We re-enable bazaar visibility and force UID
+    // recomputation now that getZone() will resolve to the new building.
+    public native void postUnpackVendor(SceneObject vendor);
+
+    // retryVendorReinit: self-healing path. Called from vendor interaction
+    // code if a prior unpack left the vendor in an inconsistent state
+    // (e.g. AuctionsMap entry not queryable). Re-runs postUnpackVendor.
+    public native boolean retryVendorReinit(SceneObject vendor);
+
+    // High-level orchestrator. Called from VendorMenuComponent radial
+    // option 81 ("Pack Up Vendor"). Does the full pack-up flow:
+    //   1. Validates ownership, building, cell containment
+    //   2. Snapshots vendor metadata (planet, buildingOID, cellOID, coords,
+    //      vendor name, listing count, packer OID)
+    //   3. Allocates a VendorControlDevice
+    //   4. Sets controlledObject to the vendor; transfers VCD into player datapad
+    //   5. Calls prePackVendor (suppress UID + hide from search)
+    //   6. Despawns vendor from world
+    //   7. Returns true on success, false on validation failure
+    public native boolean packVendor(CreatureObject player, SceneObject vendor);
+
+    // CSR helper. Same pack flow but the resulting VCD lands in the
+    // OWNER's datapad, not the admin's. Hard-gated to getAdminLevel() >= 15.
+    // If owner offline + datapad full, falls back to bank.
+    // Audit trail: TrxCode entry with admin/owner OIDs, structure metadata.
+    public native boolean adminPackVendorForOwner(CreatureObject admin, SceneObject vendor);
+}
+

@@ -1,0 +1,82 @@
+/*
+			Copyright <SWGEmu>
+	See file COPYING for copying conditions.
+*/
+
+package server.zone.objects.tangible.misc;
+
+import server.zone.objects.tangible.misc.FurnitureObject;
+import server.zone.packets.object.ObjectMenuResponse;
+import server.zone.objects.creature.CreatureObject;
+import server.zone.packets.scene.AttributeListMessage;
+import engine.log.Logger;
+
+include system.lang.ref.Reference;
+include system.lang.Time;
+include server.zone.objects.manufactureschematic.craftingvalues.CraftingValues;
+include server.zone.TreeEntry;
+include server.zone.Zone;
+include server.zone.objects.tangible.components.LightObserver;
+
+@json
+class LightObject extends FurnitureObject {
+	@dereferenced
+	protected Time lifespan;
+
+	boolean burntOut;
+	boolean firstUpdate;
+
+	protected unsigned long creationMili;
+	protected int lifespanSeconds;
+
+	public LightObject() {
+		Logger.setLoggingName("LightObject");
+
+		initializeMembers();
+	}
+
+	public native void initializeMembers();
+
+	public native void notifyInsertToZone(Zone zone);
+
+	/**
+	 * Fills the attribute list message options that are sent to player creature
+	 * @pre { }
+	 * @post { }
+	 * @param msg attribute list message with the attributes
+	 * @param object player creature to which the message is sent
+	 */
+	@local
+	@dirty
+	public native void fillAttributeList(AttributeListMessage msg, CreatureObject object);
+
+	@local
+	public abstract native void updateCraftingValues(CraftingValues values, boolean firstUpdate);
+
+	@local
+	@preLocked
+	public native void updateLifespan();
+
+	@local
+	@preLocked
+	public native void updateTemplate();
+
+	public native boolean lifespanIsPast();
+
+	public void setBurntOut(boolean val) {
+		burntOut = val;
+	}
+
+	@preLocked
+	public native void calculateLifespan(int lifespanVar);
+
+	@local
+	@dirty
+	public Time getLifespan() {
+		return lifespan;
+	}
+
+	public boolean isBurntOut() {
+		return burntOut;
+	}
+}

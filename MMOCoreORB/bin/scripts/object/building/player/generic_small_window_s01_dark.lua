@@ -1,0 +1,4 @@
+object_building_player_generic_small_window_s01_dark = object_building_player_shared_generic_small_window_s01_dark:new {
+
+}
+ObjectTemplates:addTemplate(object_building_player_generic_small_window_s01_dark, "object/building/player/generic_small_window_s01_dark.iff")

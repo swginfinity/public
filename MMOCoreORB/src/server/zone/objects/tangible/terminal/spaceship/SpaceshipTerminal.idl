@@ -1,0 +1,20 @@
+/*
+				Copyright <SWGEmu>
+		See file COPYING for copying conditions.
+*/
+
+package server.zone.objects.tangible.terminal.spaceship;
+
+import server.zone.objects.tangible.terminal.Terminal;
+import server.zone.objects.creature.CreatureObject;
+
+@json
+class SpaceshipTerminal extends Terminal {
+	public SpaceshipTerminal() {
+		Logger.setLoggingName("SpaceshipTerminal");
+	}
+
+	// Infinity: handleObjectMenuSelect remains for JTL ship list (Use radial)
+	// ETA-1 travel is handled by SpaceTerminalMenuComponent
+	public native int handleObjectMenuSelect(CreatureObject player, byte selectedID);
+}

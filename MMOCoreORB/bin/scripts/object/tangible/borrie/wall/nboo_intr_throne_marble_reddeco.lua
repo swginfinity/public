@@ -1,0 +1,4 @@
+object_tangible_borrie_wall_nboo_intr_throne_marble_reddeco = object_tangible_borrie_wall_shared_nboo_intr_throne_marble_reddeco:new {
+    objectMenuComponent = "DestructibleCityDecorationMenuComponent",
+}
+ObjectTemplates:addTemplate(object_tangible_borrie_wall_nboo_intr_throne_marble_reddeco, "object/tangible/borrie/wall/nboo_intr_throne_marble_reddeco.iff")

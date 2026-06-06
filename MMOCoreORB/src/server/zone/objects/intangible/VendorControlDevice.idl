@@ -1,0 +1,212 @@
+/*
+				Copyright <Infinity>
+		See file COPYING for copying conditions.*/
+
+package server.zone.objects.intangible;
+
+import server.zone.objects.intangible.ControlDevice;
+import server.zone.objects.creature.CreatureObject;
+import server.zone.objects.tangible.TangibleObject;
+import server.zone.objects.scene.SceneObject;
+import server.zone.objects.cell.CellObject;
+import server.zone.objects.building.BuildingObject;
+import server.zone.packets.scene.AttributeListMessage;
+include server.zone.packets.object.ObjectMenuResponse;
+include server.zone.objects.scene.variables.ContainerPermissions;
+
+/**
+ * Vendor Pack-Up (Phase 1) — intangible held in a player's datapad that
+ * encapsulates a packed vendor. The vendor's SceneObject lives inside this
+ * device's slotted container while packed; on deploy, the vendor moves
+ * into a target cell and AuctionManager::postUnpackVendor restores its
+ * bazaar registration.
+ *
+ * Mirrors NGE's GOT_data_vendor_control_device pattern. Client-side IFF
+ * shipped at object/intangible/vendor/shared_generic_vendor_control_device.iff
+ * (CRC 0x87087846).
+ */
+@json
+class VendorControlDevice extends ControlDevice {
+
+	// Snapshot fields preserved at pack time — let UI show "Vendor Control
+	// Device — <name> (<planet>)" without forcing a load of the contained
+	// vendor.
+	protected string lastPlanet;
+	protected unsigned long lastBuildingOID;
+	protected unsigned long lastCellOID;
+	protected float lastX;
+	protected float lastY;
+	protected float lastZ;
+	protected unsigned long packedAt;          // unix epoch seconds
+	protected unsigned long packedByObjectID;  // owner or admin
+	protected unsigned long ownerObjectIDSnap;
+	protected string vendorName;
+	protected int listingCountSnap;
+
+	// Model B: while packed, vendor decay continues. If the vendor is
+	// destroyed by decay while inside this device, mark this device as an
+	// empty husk.
+	protected boolean vendorDestroyedByDecay;
+
+	public VendorControlDevice() {
+		Logger.setLoggingName("VendorControlDevice");
+		Logger.setLogging(false);
+		Logger.setGlobalLogging(true);
+
+		lastPlanet = "";
+		lastBuildingOID = 0;
+		lastCellOID = 0;
+		lastX = 0;
+		lastY = 0;
+		lastZ = 0;
+		packedAt = 0;
+		packedByObjectID = 0;
+		ownerObjectIDSnap = 0;
+		vendorName = "";
+		listingCountSnap = 0;
+		vendorDestroyedByDecay = false;
+
+		// VCDs MUST stay in the datapad. Override ControlDevice base
+		// permissions which clear MOVECONTAINER deny — for vendors that
+		// allows drag-to-ground / put-in-backpack which breaks the
+		// deploy flow's parent-chain validation and creates auction
+		// state corruption (deep-review NH3).
+		ContainerPermissions permissions = super.getContainerPermissionsForUpdate();
+		permissions.setInheritPermissionsFromParent(false);
+		permissions.setDefaultDenyPermission(ContainerPermissions.MOVECONTAINER);
+		permissions.setDenyPermission("owner", ContainerPermissions.MOVECONTAINER);
+	}
+
+	/**
+	 * Pack the contained vendor into this device. Called via Lua radial on
+	 * a deployed vendor: the StructureManager wrapper allocates a VCD and
+	 * fires this method.
+	 *
+	 * The caller has already invoked AuctionManager::prePackVendor to
+	 * suppress UID rebuilds and hide from bazaar.
+	 */
+	@preLocked
+	public native void storeObject(CreatureObject player, boolean force = false);
+
+	/**
+	 * Deploy the contained vendor at the player's chosen cell + coords.
+	 * The player's SUI placement flow calls this with target cell + local
+	 * coords; this method:
+	 *   1. Validates the deploy target (player has admin permission on
+	 *      the building, cell has volume capacity, etc.)
+	 *   2. Moves vendor SceneObject into target cell at coords
+	 *   3. Calls AuctionManager::postUnpackVendor to restore registration
+	 *   4. Re-broadcasts vendor to in-range players
+	 *
+	 * Note: the parameterless ControlDevice::generateObject(player) abstract
+	 * is satisfied by a small wrapper that reads pre-set deploy-target
+	 * fields. The radial flow uses deployVendorAtCell directly so callers
+	 * don't need a two-step set-then-generate dance.
+	 */
+	@preLocked
+	@arg1preLocked
+	public native void deployVendorAtCell(CreatureObject player, CellObject targetCell, float x, float y, float z);
+
+	/** Required by ControlDevice abstract. Forwards to deploy with last-known coords. */
+	@preLocked
+	public native void generateObject(CreatureObject player);
+
+	/** Vendors don't summon. */
+	public void callObject(CreatureObject player, boolean initialCall = false) {
+	}
+
+	/**
+	 * Radial menu hook — surfaces "Deploy Vendor (last location)" option
+	 * when a VCD is opened from the player's datapad. Sub-radial 81 to
+	 * mirror the pack-up entry on the deployed-vendor side.
+	 *
+	 * Phase 1 MVP: only the last-known-location deploy. The full SUI-driven
+	 * "pick a new cell" flow is a follow-up commit.
+	 */
+	@local
+	public native void fillObjectMenuResponse(ObjectMenuResponse menuResponse, CreatureObject player);
+
+	/** Dispatch radial selection. */
+	public native int handleObjectMenuSelect(CreatureObject player, byte selectedID);
+
+	/** Phase 1: deny trade between players. */
+	public boolean canBeTradedTo(CreatureObject player, CreatureObject receiver, int numberInTrade) {
+		return false;
+	}
+
+	/**
+	 * Phase 1: deny standard right-click Destroy. A VCD with a vendor inside
+	 * would orphan the vendor (and potentially auction items / stockroom +
+	 * mail-pending items) if the player could just delete it. Even an empty
+	 * husk goes through the dedicated radial 82 "Discard Empty Device" path,
+	 * which calls destroyObjectFromWorld directly and bypasses this hook -
+	 * so blocking ServerDestroyObjectCommand here is the right scope.
+	 */
+	public native int canBeDestroyed(CreatureObject player);
+
+	/**
+	 * Override to cascade-destroy the packed vendor + its auction items when
+	 * the VCD itself is removed by a path that doesn't go through canBeDestroyed
+	 * (e.g., character delete cascading through datapad contents).  Without
+	 * this, a packed vendor's auction items linger forever because their
+	 * suppressUIDRebuild=true flag makes the boot-time orphan sweep ignore them.
+	 *
+	 * Mirrors PetControlDeviceImplementation::destroyObjectFromDatabase which
+	 * cascades through to the controlled pet for the same reason.
+	 */
+	public native void destroyObjectFromDatabase(boolean destroyContainedObjects = false);
+
+	@dirty
+	public boolean isVendorControlDevice() {
+		return true;
+	}
+
+	@dirty
+	public boolean isEmptyHusk() {
+		return vendorDestroyedByDecay;
+	}
+
+	@dirty public string getLastPlanet() { return lastPlanet; }
+	@dirty public unsigned long getLastBuildingOID() { return lastBuildingOID; }
+	@dirty public unsigned long getLastCellOID() { return lastCellOID; }
+	@dirty public float getLastX() { return lastX; }
+	@dirty public float getLastY() { return lastY; }
+	@dirty public float getLastZ() { return lastZ; }
+	@dirty public unsigned long getPackedAt() { return packedAt; }
+	@dirty public unsigned long getOwnerObjectIDSnap() { return ownerObjectIDSnap; }
+	@dirty public string getVendorName() { return vendorName; }
+	@dirty public int getListingCountSnap() { return listingCountSnap; }
+
+	// Caller passes packedAtEpoch (seconds since epoch). C++ side computes
+	// it via System::getMiliTime()/1000 — IDL compiler can't do casts.
+	@preLocked
+	public void setSnapshot(final string planet, unsigned long buildingOID, unsigned long cellOID, float x, float y, float z, unsigned long packerOID, unsigned long ownerOID, final string vname, int listings, unsigned long packedAtEpoch) {
+		lastPlanet = planet;
+		lastBuildingOID = buildingOID;
+		lastCellOID = cellOID;
+		lastX = x;
+		lastY = y;
+		lastZ = z;
+		packedAt = packedAtEpoch;
+		packedByObjectID = packerOID;
+		ownerObjectIDSnap = ownerOID;
+		vendorName = vname;
+		listingCountSnap = listings;
+	}
+
+	@preLocked
+	public void markVendorDestroyed() {
+		vendorDestroyedByDecay = true;
+	}
+
+	/**
+	 * Lazy orphan scan — runs on every VCD deserialization (player login,
+	 * datapad inspection, etc.). Catches "VCD with no contained vendor"
+	 * orphans from a crash mid-pack (between createObject(VCD) and the
+	 * vendor->VCD transferObject step). Per the abort recovery policy:
+	 * mark as husk so the player's existing "Discard Empty Device" radial
+	 * cleans it up. Vendor (if any) is unaffected — it never moved.
+	 */
+	@local
+	public native void initializeTransientMembers();
+}

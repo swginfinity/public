@@ -1,0 +1,5 @@
+
+object_tangible_wearables_shirt_wod_nightsister_shirt_s02 = object_tangible_wearables_shirt_shared_wod_nightsister_shirt_s02:new {
+
+}
+ObjectTemplates:addTemplate(object_tangible_wearables_shirt_wod_nightsister_shirt_s02, "object/tangible/wearables/shirt/wod_nightsister_shirt_s02.iff")

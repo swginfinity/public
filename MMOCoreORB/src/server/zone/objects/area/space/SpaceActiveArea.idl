@@ -1,0 +1,36 @@
+/*
+				Copyright <SWGEmu>
+		See file COPYING for copying conditions.
+*/
+
+package server.zone.objects.area.space;
+
+import server.zone.objects.scene.SceneObject;
+import server.zone.objects.area.ActiveArea;
+
+include engine.util.u3d.Vector3;
+
+@mock
+@json
+class SpaceActiveArea extends ActiveArea {
+	// Infinity: Shape type constants for space regions
+	public static final int SPHERE = 0;
+	public static final int CUBOID = 1;
+
+	public SpaceActiveArea() {
+		super();
+
+		Logger.setLoggingName("SpaceActiveArea");
+	}
+
+	@dirty
+	public native abstract void notifyEnter(SceneObject object);
+
+	@dirty
+	public native abstract void notifyExit(SceneObject object);
+
+	@local
+	@dereferenced
+	@dirty
+	public native Vector3 getRandomPosition();
+}

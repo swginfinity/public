@@ -1,0 +1,137 @@
+/*
+	Copyright <SWGEmu>
+	See file COPYING for copying conditions.
+
+	BlueprintDiskObject — sealed container for the Room Designer v2 system.
+
+	Holds items inside a loaded blueprint disk. Behaves like a factory crate
+	in terms of capacity isolation (contents don't count against player
+	inventory cap), but browsable like a chest (contents viewable via the
+	standard Open radial).
+
+	See /workspace/ROOM_DESIGNER.md for design rationale.
+
+	Infinity: Custom class
+*/
+
+package server.zone.objects.blueprint;
+
+import server.zone.objects.scene.SceneObject;
+import server.zone.objects.tangible.TangibleObject;
+import server.zone.packets.scene.AttributeListMessage;
+import server.zone.objects.creature.CreatureObject;
+import server.zone.packets.object.ObjectMenuResponse;
+include templates.SharedObjectTemplate;
+import server.zone.objects.scene.variables.ContainerPermissions;
+
+@json
+class BlueprintDiskObject extends TangibleObject {
+
+	// Suggested cap at ~150. Enforced both here (hard refuse) and in the
+	// burn action's Lua-side check (soft prompt).
+	protected int maxCapacity;
+
+	public BlueprintDiskObject() {
+		Logger.setLoggingName("BlueprintDiskObject");
+
+		// Kiosk-friendly cap; matches MAX_DISK_CAPACITY in blueprint_disk_sui.lua.
+		maxCapacity = 250;
+
+		// Visible (chest-style) but sealed — MOVEIN/MOVEOUT denied by default.
+		// Burn and deploy set a LuaStringData flag that canAddObject and
+		// canRemoveObject consult to permit internal server moves.
+		super.setContainerInheritPermissionsFromParent(false);
+		super.setContainerDefaultAllowPermission(ContainerPermissions.OPEN);
+		super.setContainerDefaultDenyPermission(ContainerPermissions.MOVEIN);
+		super.setContainerDefaultDenyPermission(ContainerPermissions.MOVEOUT);
+	}
+
+	@local
+	public native void loadTemplateData(SharedObjectTemplate templateData);
+
+	public native void initializeTransientMembers();
+
+	@dirty
+	public native void sendBaselinesTo(SceneObject player);
+
+	/**
+	 * Attribute list on inspect. Suppresses the auto "volume: 0/250" line
+	 * (which would show 0 because getCountableObjectsRecursive returns 0 for
+	 * inventory-cap-bypass) and renders a real "Items: N/maxCapacity" using
+	 * the direct-children count.
+	 */
+	@local
+	@dirty
+	public native void fillAttributeList(AttributeListMessage msg, CreatureObject object);
+
+	/**
+	 * Radial. Delegates to the Lua menu component; nothing extra here.
+	 */
+	@local
+	@dirty
+	public native void fillObjectMenuResponse(ObjectMenuResponse menuResponse, CreatureObject player);
+
+	@preLocked
+	@arg1preLocked
+	public native int handleObjectMenuSelect(CreatureObject player, byte selectedID);
+
+	/**
+	 * The load-bearing override: disk + its contents count as 1 inventory
+	 * slot, regardless of how many items are physically inside. Mirrors the
+	 * cell / factory-crate pattern: parent loop adds 1 for the disk itself,
+	 * this returns 0 for the nested contents.
+	 */
+	@dirty
+	public abstract native int getCountableObjectsRecursive() {
+		return 0;
+	}
+
+	/**
+	 * Size on a vendor = 1 (the disk), not N (the contents). Prevents
+	 * vendor listing from accidentally counting all the embedded items.
+	 */
+	@dirty
+	public abstract native int getSizeOnVendorRecursive() {
+		return 1;
+	}
+
+	/**
+	 * Sealed: refuses all drag-in operations unless the disk is flagged
+	 * burn_in_progress. Burn sets the flag, calls transferObject, clears
+	 * the flag. GM privilege bypasses.
+	 */
+	public native int canAddObject(SceneObject object, int containmentType, string errorDescription);
+
+	/**
+	 * Single-source-of-truth gate for MOVEIN, MOVEOUT, and OPEN. Players can
+	 * Open the disk to browse; drag in/out is denied. Privileged staff bypass
+	 * everything for support recovery (drag-out included — the framework's
+	 * built-in admin bypass only auto-grants OPEN/WALKIN, not MOVEOUT).
+	 */
+	public native byte checkContainerPermission(CreatureObject player, unsigned short permission);
+
+	/**
+	 * Sealed destruction: refuse to destroy a disk that still holds items.
+	 * Without this override, a player using any destroy path (radial menu,
+	 * drag-to-trash, /destroy, bulk inventory clear) would permanently orphan
+	 * all contents. Deploy and Recall paths must empty the disk first
+	 * (they already do). GM recovery uses [MGMT] Force Empty to drain
+	 * contents, then destroy works normally.
+	 */
+	public native void destroyObjectFromWorld(boolean sendSelfDestroy);
+
+	@dirty
+	public abstract boolean isBlueprintDisk() {
+		return true;
+	}
+
+	@read
+	public int getMaxCapacity() {
+		return maxCapacity;
+	}
+
+	@preLocked
+	public void setMaxCapacity(int value) {
+		maxCapacity = value;
+	}
+}

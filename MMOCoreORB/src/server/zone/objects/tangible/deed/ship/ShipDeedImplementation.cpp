@@ -1,0 +1,236 @@
+/*
+ * ShipDeedImplementation.cpp
+ *
+ *  Created on: Jan. 19, 2023
+ *  Author: H
+ */
+
+
+#include "server/zone/objects/tangible/deed/ship/ShipDeed.h"
+#include"server/zone/ZoneServer.h"
+#include "server/zone/packets/object/ObjectMenuResponse.h"
+#include "templates/tangible/ship/ShipDeedTemplate.h"
+#include "server/zone/objects/intangible/ShipControlDevice.h"
+#include "server/zone/objects/ship/ShipObject.h"
+#include "server/zone/managers/player/PlayerManager.h"
+#include "server/zone/Zone.h"
+#include "server/zone/managers/ship/ShipManager.h"
+#include "server/zone/managers/planet/PlanetManager.h"
+
+void ShipDeedImplementation::loadTemplateData(SharedObjectTemplate* templateData) {
+	DeedImplementation::loadTemplateData(templateData);
+
+	if (!templateData->isShipDeedTemplate()) {
+		error() << "Template Data is not ship deed";
+		return;
+	}
+
+	ShipDeedTemplate* shipDeedData = dynamic_cast<ShipDeedTemplate*>(templateData);
+
+	if (shipDeedData == nullptr) {
+		error() << "Ship Deed Data is null";
+		return;
+	}
+
+	generatedObjectTemplate = shipDeedData->getGeneratedObjectTemplate();
+	controlDeviceTemplate = shipDeedData->getShipControlDeviceTemplate();
+	shipType = shipDeedData->getShipType();
+}
+
+void ShipDeedImplementation::fillAttributeList(AttributeListMessage* alm, CreatureObject* object) {
+	alm->insertAttribute("volume", 1);
+
+	// Sorosuub Luxury Yacht veteran reward do not show complete ALM
+	if (generatedObjectTemplate.hashCode() == 388127163) { // object/ship/player/player_sorosuub_space_yacht.iff
+		return;
+	}
+
+	StringBuffer msg;
+
+	if (getTotalSkillsRequired() == 1) {
+		msg << "@skl_n:" << getSkillRequired(0);
+		alm->insertAttribute("pilotskillrequired", msg);
+
+		msg.deleteAll();
+	}
+
+	float maxCond = getMaxHitPoints();
+	float currentHp = maxCond - getHitPointsDamage();
+
+	msg << Math::getPrecision(currentHp, 5) << "/" << Math::getPrecision(maxCond, 5);
+
+	alm->insertAttribute("chassishitpoints", msg);
+	msg.deleteAll();
+
+	msg.append(getMass(), 2);
+	alm->insertAttribute("chassismass", msg);
+	msg.deleteAll();
+
+	alm->insertAttribute("parking_spot", getParkingLocation());
+}
+
+void ShipDeedImplementation::initializeTransientMembers() {
+	DeedImplementation::initializeTransientMembers();
+}
+
+void ShipDeedImplementation::updateCraftingValues(CraftingValues* values, bool firstUpdate) {
+}
+
+void ShipDeedImplementation::fillObjectMenuResponse(ObjectMenuResponse* menuResponse, CreatureObject* player) {
+	DeedImplementation::fillObjectMenuResponse(menuResponse, player);
+
+	// Infinity: JTL is disabled — do not show "Generate Ship" radial option.
+	// Uncomment when JTL is re-enabled.
+	/*
+	if (isASubChildOf(player))
+		menuResponse->addRadialMenuItem(20, 3, "@sui:create_vehicle"); // ('string/en/sui.stf', 52, 'create_vehicle', 'Generate Ship'),
+	*/
+}
+
+int ShipDeedImplementation::handleObjectMenuSelect(CreatureObject* player, byte selectedID) {
+	if (player == nullptr)
+		return 1;
+
+	// Infinity: JTL is disabled — block ship generation from deeds.
+	// Players should not be able to create new ship objects while JTL is off.
+	// The radial menu option is also hidden (see fillObjectMenuResponse above),
+	// but this guard prevents generation via any other code path.
+	// Uncomment when JTL is re-enabled.
+
+	/*
+	if (selectedID == 20) {
+		if (generated || !isASubChildOf(player))
+			return 1;
+
+		ManagedReference<SceneObject*> datapad = player->getDatapad();
+
+		if (datapad == nullptr) {
+			error() << "Players datapad is a nullptr";
+			return 1;
+		}
+
+		ZoneServer* zoneServer = player->getZoneServer();
+
+		if (zoneServer == nullptr) {
+			return 1;
+		}
+
+		// Check if this will exceed maximum number of vehicles allowed
+		ManagedReference<PlayerManager*> playerManager = zoneServer->getPlayerManager();
+
+		if (playerManager == nullptr) {
+			return 1;
+		}
+
+		auto zone = player->getZone();
+
+		if (zone == nullptr) {
+			return 1;
+		}
+
+		auto planetManager = zone->getPlanetManager();
+
+		if (planetManager == nullptr) {
+			return 1;
+		}
+
+		auto travelPoint = planetManager->getNearestPlanetTravelPoint(player->getWorldPosition(), 16000.f, true, true);
+
+		if (travelPoint == nullptr) {
+			return 1;
+		}
+
+		// Sorosuub Luxury Yacht veteran reward deed check
+		bool isYachtDeed = generatedObjectTemplate.hashCode() == 388127163; // object/ship/player/player_sorosuub_space_yacht.iff
+
+		int totalShips = 0;
+		int pobShips = 0;
+		int maxStoredShips = playerManager->getBaseStoredShips();
+
+		for (int i = 0; i < datapad->getContainerObjectsSize(); i++) {
+			Reference<SceneObject*> obj =  datapad->getContainerObject(i).castTo<SceneObject*>();
+
+			if (obj == nullptr)
+				continue;
+
+			if (obj->isShipControlDevice()) {
+				totalShips++;
+
+				ShipControlDevice* shipDevice = obj.castTo<ShipControlDevice*>();
+
+				// Sorosuub Luxury Yacht veteran reward only counts towards max ships, not max POB ships
+				if (shipDevice != nullptr && (shipDevice->getShipType() == ShipManager::POBSHIP) && !isYachtDeed) {
+					pobShips++;
+				}
+			}
+		}
+
+		if (totalShips >= maxStoredShips) {
+			player->sendSystemMessage("@space/space_interaction:toomanyships"); // You have too many ships in your datapad already!
+			return 1;
+		}
+
+		if (pobShips >= 1 && getShipType() == ShipManager::POBSHIP) {
+			player->sendSystemMessage("@space/space_interaction:too_many_pobs"); // You cannot launch another ship with an interior. Empty out one of your other ships and you may take off with this ship.
+			return 1;
+		}
+
+		// Sorosuub Luxury Yacht veteran reward should come with components
+		bool componentCreation = (isYachtDeed ? true : shouldCreateComponents());
+
+		ManagedReference<ShipObject*> ship = ShipManager::instance()->createPlayerShip(player, generatedObjectTemplate, certRequired, componentCreation);
+
+		if (ship == nullptr) {
+			error() << "Failed to generate ship object from template: " << generatedObjectTemplate;
+			return 1;
+		}
+
+		// Player is locked, cross lock the ship to the player
+		Locker slocker(ship, player);
+
+		ship->setChassisMaxHealth(getMaxHitPoints(), true);
+		ship->setCurrentChassisHealth(getMaxHitPoints() - getHitPointsDamage(), true);
+
+		ship->setChassisMaxMass(getMass(), true);
+
+		uint64 controlDeviceID = ship->getControlDeviceID();
+
+		ManagedReference<ShipControlDevice*> shipControlDevice = cast<ShipControlDevice*>(zoneServer->getObject(controlDeviceID).get());
+
+		if (shipControlDevice == nullptr) {
+			ship->destroyObjectFromDatabase(true);
+			ship->destroyObjectFromWorld(true);
+
+			error() << "Problem generating ship template, null control device: " << generatedObjectTemplate;
+			return 1;
+		}
+
+		Locker deviceLock(shipControlDevice, player);
+
+		if (isYachtDeed) {
+			shipControlDevice->setParkingLocation(travelPoint->getPointName());
+		} else {
+			shipControlDevice->setParkingLocation(getParkingLocation());
+		}
+
+		for (int i = 0; i < getTotalSkillsRequired(); i++) {
+			auto skillName = getSkillRequired(i);
+			shipControlDevice->addSkillRequired(skillName);
+		}
+
+		deviceLock.release();
+
+		// Sorosuub Luxury Yacht veteran reward deeds do not get destroyed
+		if (isYachtDeed) {
+			return 0;
+		}
+
+		destroyObjectFromWorld(true);
+		destroyObjectFromDatabase(true);
+
+		return 0;
+	}
+	*/
+
+	return DeedImplementation::handleObjectMenuSelect(player, selectedID);
+}

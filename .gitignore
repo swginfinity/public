@@ -1,0 +1,55 @@
+MMOEngine
+CLAUDE.md
+MMOCoreORB/bin/databases_tmp_link
+luacov.report.out
+luacov.stats.out
+/.vs/wun1/FileContentIndex
+/.vs/wun1/v17
+/.vs/slnx.sqlite
+/.vs/VSWorkspaceState.json
+/.vs/slnx.sqlite-journal
+/.vs/ProjectSettings.json
+.DS_Store
+.cache
+__pycache__/
+compile_commands.json
+MMOCoreORB/bin/scripts/custom_scripts/mobile/hoth/CREATURE_DESIGN_SUMMARY.txt
+MMOCoreORB/bin/conf/*
+MMOCoreORB/_ai_dev/data_persistence_patterns.md
+MMOCoreORB/_ai_dev/LAIR-BOSS.md
+MMOCoreORB/_ai_dev/method_audit_2024_12_10.md
+MMOCoreORB/_ai_dev/observer_patterns.md
+MMOCoreORB/_ai_dev/quest_design_patterns.md
+MMOCoreORB/_ai_dev/spawning_and_timers.md
+MMOCoreORB/_ai_dev/TAMABLE.md
+MMOCoreORB/bin/scripts/custom_scripts/_ai_stuff/lua_method_audit_krayt_hoth.md
+MMOCoreORB/bin/scripts/custom_scripts/_ai_stuff/lua_object_methods.md
+.claude
+.vscode/
+
+# Backup files and folders
+.backups/
+*.bak
+MMOCoreORB/bin/databases_clean/
+MMOCoreORB/bin/re_data/
+
+# Database files and migration artifacts
+MMOCoreORB/bin/databases/
+MMOCoreORB/bin/database_logs/
+MMOCoreORB/bin/databases_2.0/
+MMOCoreORB/bin/databases_backup/
+MMOCoreORB/bin/dbconvert
+
+# dbconvert source (lives in separate repo: swgemu-dbconvert)
+MMOCoreORB/src/tools/
+
+# Infinity: auto-generated / live server data — written at runtime, not source
+MMOCoreORB/bin/scripts/managers/ghoutput.xml
+MMOCoreORB/bin/scripts/managers/resource_manager_spawns.lua
+MMOCoreORB/bin/.server.lock
+MMOCoreORB/bin/start_server.sh
+
+# Local bug tracker
+/bugs/
+.mcp.json
+TODO.md

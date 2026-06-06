@@ -1,0 +1,4 @@
+object_building_dathomir_night_sister_stronghold_dark = object_building_dathomir_shared_night_sister_stronghold_dark:new {
+
+}
+ObjectTemplates:addTemplate(object_building_dathomir_night_sister_stronghold_dark, "object/building/dathomir/night_sister_stronghold_dark.iff")

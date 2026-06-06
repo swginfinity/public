@@ -1,0 +1,101 @@
+black_sun_assassin = Creature:new {
+	objectName = "@mob/creature_names:world_blksun_assassin",
+	randomNameType = NAME_GENERIC,
+	randomNameTag = true,
+	mobType = MOB_NPC,
+	socialGroup = "death_watch",
+	faction = "",
+	level = 230,
+	chanceHit = 1.75,
+	damageMin = 670,
+	damageMax = 1050,
+	baseXp = 10081,
+	baseHAM = 79000,
+	baseHAMmax = 96000,
+	armor = 2,
+	resists = {55,55,70,45,75,80,55,45,-1},
+	meatType = "",
+	meatAmount = 0,
+	hideType = "",
+	hideAmount = 0,
+	boneType = "",
+	boneAmount = 0,
+	milk = 0,
+	tamingChance = 0,
+	ferocity = 0,
+	pvpBitmask = AGGRESSIVE + ATTACKABLE + ENEMY,
+	creatureBitmask = KILLER,
+	optionsBitmask = AIENABLED,
+	diet = HERBIVORE,
+	scale = 1.15,
+
+	templates = {"object/mobile/dressed_black_sun_assassin.iff"},
+	lootGroups = {
+		{
+			groups = {
+				{group = "pistols", chance = 3300000},
+				{group = "rifles", chance = 3400000},
+				{group = "carbines", chance = 3300000},
+			},
+			lootChance = 7500000,
+		},
+		{
+			groups = {
+				{group = "junk", chance = 3400000},
+				{group = "wearables_common", chance = 3300000},
+				{group = "wearables_uncommon", chance = 3300000},
+			},
+			lootChance = 7500000,
+		},
+		{
+			groups = {
+				{group = "jetpack_base", chance = 10000000},
+			},
+			lootChance = 1500000
+		},
+		{
+			groups = {
+				{group = "bounty_hunter_armor", chance = 10000000},
+			},
+			lootChance = 2500000
+		},
+		{
+			groups = {
+				{group = "bounty_hunter_armor", chance = 10000000},
+			},
+			lootChance = 2500000
+		},
+		{
+			groups = {
+				{group = "bounty_hunter_armor", chance = 10000000},
+			},
+			lootChance = 2500000
+		},
+		{
+			groups = {
+				{group = "armor_attachments", chance = 10000000},
+			},
+			lootChance = 1000000
+		},
+		{
+			groups = {
+				{group = "clothing_attachments", chance = 10000000},
+			},
+			lootChance = 500000
+		},
+	},
+
+	-- Primary and secondary weapon should be different types (rifle/carbine, carbine/pistol, rifle/unarmed, etc)
+	-- Unarmed should be put on secondary unless the mobile doesn't use weapons, in which case "unarmed" should be put primary and "none" as secondary
+	primaryWeapon = "deathwatch_ranged",
+	secondaryWeapon = "pirate_unarmed",
+	conversationTemplate = "",
+	thrownWeapon = "thrown_weapons",
+
+	-- primaryAttacks and secondaryAttacks should be separate skill groups specific to the weapon type listed in primaryWeapon and secondaryWeapon
+	-- Use merge() to merge groups in creatureskills.lua together. If a weapon is set to "none", set the attacks variable to empty brackets
+	primaryAttacks = merge(bountyhuntermaster,marksmanmaster,carbineermaster),
+	secondaryAttacks = brawlermaster,
+}
+
+CreatureTemplates:addCreatureTemplate(black_sun_assassin, "black_sun_assassin")

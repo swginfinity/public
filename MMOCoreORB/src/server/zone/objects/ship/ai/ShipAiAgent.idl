@@ -1,0 +1,927 @@
+/*
+				Copyright <SWGEmu>
+		See file COPYING for copying conditions.*/
+
+package server.zone.objects.ship.ai;
+
+import system.util.Vector;
+import system.lang.Time;
+import system.lang.String;
+import system.lang.Exception;
+import server.zone.Zone;
+
+import server.zone.objects.ship.FighterShipObject;
+import server.zone.objects.ship.ai.ShipAgentTemplate;
+include server.zone.objects.ship.ShipObject;
+import server.zone.objects.ship.ai.events.ShipAiBehaviorEvent;
+import server.zone.objects.ship.ai.events.DespawnAiShipOnNoPlayersInRange;
+import system.lang.ref.Reference;
+import server.zone.TreeEntry;
+include server.zone.objects.ship.ai.SpacePatrolPointsVector;
+include server.zone.objects.ship.ai.SpacePatrolPoint;
+import engine.core.ManagedObject;
+import server.zone.objects.tangible.TangibleObject;
+include templates.SharedObjectTemplate;
+include templates.tangible.ship.SharedShipObjectTemplate;
+import engine.util.Observable;
+include system.thread.Mutex;
+include system.thread.ReadWriteLock;
+include server.zone.objects.ship.ai.btspace.BehaviorSpace;
+include server.zone.objects.ship.ai.btspace.BehaviorTreeSlotSpace;
+import server.zone.objects.ship.ai.btspace.BlackboardDataSpace;
+include server.zone.objects.ship.ai.btspace.BlackboardDataMapSpace;
+import system.thread.atomic.AtomicInteger;
+import server.zone.objects.scene.SceneObject;
+import server.zone.objects.ship.ai.SquadronObserver;
+include system.util.VectorMap;
+include engine.util.u3d.Vector3;
+include server.zone.objects.creature.variables.CooldownTimerMap;
+include engine.util.u3d.Quaternion;
+include server.zone.objects.creature.CreatureObject;
+include server.zone.objects.ship.ShipProjectileData;
+include server.zone.objects.ship.ShipMissileData;
+include server.zone.objects.ship.ShipTurretData;
+
+@json
+class ShipAiAgent extends FighterShipObject {
+	protected transient ShipAiBehaviorEvent behaviorEvent;
+
+	@dereferenced
+	protected transient ReadWriteLock despawnMutex;
+
+	@dereferenced
+	protected transient SpacePatrolPointsVector patrolPoints;
+
+	@dereferenced
+	protected transient SpacePatrolPoint homeLocation;
+
+	protected boolean despawnOnNoPlayerInRange;
+
+	@weakReference
+	private ShipObject followShip;
+
+	@weakReference
+	private ShipObject followShipStore;
+
+	@weakReference
+	private ShipObject targetShip;
+
+	protected transient unsigned int movementState;
+
+	protected transient unsigned int movementCount;
+
+	protected transient unsigned long movementTime;
+
+	@dereferenced
+	private transient Mutex targetMutex;
+
+	@dereferenced
+	private transient Mutex behaviorEventMutex;
+
+	private int nextBehaviorInterval;
+
+	protected float respawnTimer;
+	protected int respawnCounter;
+	protected boolean randomRespawn;
+
+	protected float coordinateMin;
+	protected float coordinateMax;
+
+	private transient float escortSpeed;
+
+	@dereferenced
+	protected transient AtomicInteger numberOfPlayersInRange;
+
+	protected transient DespawnAiShipOnNoPlayersInRange despawnEvent;
+
+	@dereferenced
+	protected Vector<unsigned int> alliedFactions;
+
+	@dereferenced
+	protected Vector<unsigned int> enemyFactions;
+
+	// btree bit
+	@dereferenced
+	@rawTemplate(value = "BehaviorTreeSlotSpace, Reference<BehaviorSpace*>")
+	private transient VectorMap btreeMap;
+
+	@dereferenced
+	private transient Vector<unsigned int> runningChain;
+
+	@dereferenced
+	private string aiTemplate;
+
+	@dereferenced
+	private transient BlackboardDataMapSpace blackboard;
+
+	@dereferenced
+	protected transient Time alertedTime;
+
+	@dereferenced
+	protected transient Time aggroDelay;
+
+	@dereferenced
+	protected transient Time evadeDelay;
+
+	@transactional
+	protected transient CooldownTimerMap cooldownTimerMap;
+
+	protected unsigned int shipBitmask;
+
+	protected transient unsigned long updateZoneTime;
+
+	protected transient unsigned int serverSyncCount;
+
+	protected transient float missileLockTime;
+
+	@weakReference
+	protected SceneObject homeObject;
+
+	public static final int PATROLPOINTS_MAX = 20;
+	public static final int SERVERSYNCCOUNTMAX = 5;
+	public static final int UPDATEZONEINTERVAL = 2000; // msec
+	public static final int BEHAVIORINTERVALMAX = 2000; // msec
+	public static final int BEHAVIORINTERVAL = 1000; // msec
+	public static final int BEHAVIORINTERVALMIN = 500; // msec
+
+	public static final float VELOCITY_MAX = 512.f;
+	public static final float DEFAULTAGGRORADIUS = 768.f;
+	public static final float MAX_ATTACK_DISTANCE = 1280.f;
+	public static final float MAX_EVADE_DURATION = 5.f; // sec
+
+	public static final int OBLIVIOUS = 0;
+	public static final int WATCHING = 1;
+	public static final int FOLLOWING = 2;
+	public static final int PATROLLING = 3;
+	public static final int ATTACKING = 4;
+	public static final int FLEEING = 5;
+	public static final int LEASHING = 6;
+	public static final int EVADING = 7;
+	public static final int PATHING_HOME = 8;
+	public static final int FOLLOW_FORMATION = 9;
+
+	public static final int NEUTRAL_PROJECTILE = 2;
+	public static final int REBEL_PROJECTILE = 4;
+	public static final int IMPERIAL_PROJECTILE = 6;
+
+	public static final float DEFAULT_PROJECTILE_SPEED = 500.f;
+	public static final float DEFAULT_PROJECTILE_RANGE = 512.f;
+	public static final float DEFAULT_PROJECTILE_REFIRE = 0.5f;
+	public static final float DEFAULT_MISSILE_REFIRE = 5.f;
+
+	protected transient unsigned long customShipAiMap;
+
+	protected transient ShipAgentTemplate agentTemplate;
+
+	protected transient int experienceValue;
+
+	protected transient float lootChance;
+	protected transient int lootRolls;
+
+	@dereferenced
+	protected transient string lootTable;
+
+	protected transient int minCredits;
+	protected transient int maxCredits;
+
+	protected transient int imperialFactionReward;
+	protected transient int rebelFactionReward;
+
+	protected transient unsigned int conversationTemplate;
+	protected transient unsigned int conversationMobile;
+	protected transient unsigned int conversationMessage;
+
+	protected transient float minGuardPatrol;
+	protected transient float maxGuardPatrol;
+
+	@dereferenced
+	protected transient Vector<unsigned int> fixedPatrolPoints;
+
+	@dereferenced
+	private transient Mutex enemyListMutex;
+
+	@dereferenced
+	protected transient Vector<unsigned long> enemyShipList;
+
+	unsigned long missionOwnerID;
+
+	private transient SquadronObserver squadron;
+
+	public ShipAiAgent() {
+		movementState = OBLIVIOUS;
+
+		respawnTimer = 0;
+		respawnCounter = 0;
+		randomRespawn = false;
+
+		nextBehaviorInterval = BEHAVIORINTERVAL;
+
+		despawnOnNoPlayerInRange = false;
+
+		aiTemplate = "";
+		customShipAiMap = 0;
+
+		coordinateMin = -8192;
+		coordinateMax = 8192;
+
+		agentTemplate = null;
+
+		experienceValue = 0;
+
+		lootChance = 0;
+		lootRolls = 0;
+
+		lootTable = "";
+
+		minCredits = 0;
+		maxCredits = 0;
+
+		escortSpeed = 0.f;
+
+		imperialFactionReward = 0;
+		rebelFactionReward = 0;
+
+		conversationTemplate = 0;
+		conversationMobile = 0;
+		conversationMessage = 0;
+
+		minGuardPatrol = 0;
+		maxGuardPatrol = 0;
+
+		missionOwnerID = 0;
+	}
+
+	/**
+	 * Reads and sets the template data from a SharedTangibleObjectTemplate LuaObject
+	 * @pre { templateData is a valid pointer }
+	 * @post { TangibleObject members are initialized }
+	 * @param templateData templateData points to the SharedTangibleObjectTemplate LuaObject that is used to initialize the TangibleObject members
+	 */
+	@local
+	public native abstract void loadTemplateData(SharedObjectTemplate templateData);
+
+	@local
+	public native abstract void loadTemplateData(ShipAgentTemplate agentTemp);
+
+	/**
+	 * Initializes the transient members of SceneObject, must call the inherited object method first.
+	 * @pre {transient members are not initialized }
+	 * @post { transient members are initialized }
+	 */
+	public native void initializeTransientMembers();
+
+	public void finalize() {
+	}
+
+	@local
+	public native void notifyInsertToZone(Zone zone);
+
+	@local
+	public native void notifyInsert(TreeEntry entry);
+
+	@local
+	public abstract native void notifyDissapear(TreeEntry entry);
+
+	@preLocked
+	public native void notifyDespawn();
+
+	@weakReference
+	public ShipObject getFollowShipObject() {
+		return followShip;
+	}
+
+	public void storeFollowObject() {
+		synchronized (targetMutex) {
+			followShipStore = followShip;
+		}
+	}
+
+	@weakReference
+	public ShipObject getTargetShipObject() {
+		return targetShip;
+	}
+
+	@read
+	public unsigned int getMovementState() {
+		return movementState;
+	}
+
+	@dirty
+	public native void setMovementState(int state);
+
+	@dirty
+	public native unsigned long getMovementDeltaTime();
+
+	public native void addPatrolPoint(@dereferenced final SpacePatrolPoint value);
+
+	@local
+	@dereferenced
+	public native SpacePatrolPoint getNextPosition();
+
+	@local
+	@dereferenced
+	public native SpacePatrolPoint getFinalPosition();
+
+	@local
+	public native boolean isInRangePosition(@dereferenced final Vector3 value, float radius);
+
+	@local
+	public native void setNextFollowPosition();
+
+	@local
+	public native void setNextSquadronPosition();
+
+	@local
+	public native void setNextAttackPosition();
+
+	@local
+	public native void setNextEvadePosition();
+
+	@local
+	public native void setNextLeashPosition();
+
+	@local
+	@dereferenced
+	public native Vector3 getInterceptPosition(ShipObject targetShip, float speed, int slot = -1, int targetSlot = -1);
+
+	@dirty
+	public native float getMaxDistance();
+
+	@dirty
+	public native int getTransformType();
+
+	@dirty
+	public native int getPatrolSizeMax();
+
+	@preLocked
+	public native int setDestination();
+
+	@preLocked
+	public native void setNextTransform();
+
+	@preLocked
+	public native void setSquadronTransform();
+
+	@local
+	public native float getNextSpeed();
+
+	public native float calculateActualMaxSpeed();
+
+	public native boolean setDisabledEngineSpeed();
+
+	@local
+	public native void updateTransform(boolean lightUpdate = true);
+
+	public native int getNextBehaviorInterval();
+
+	@preLocked
+	public native boolean findNextPosition(int maxDistance);
+
+	public native boolean generatePatrol(int totalPoints, float distance, int pathShape = 0);
+
+	public native void updatePatrolPoints();
+
+	@preLocked
+	public native void leash();
+
+	public void clearPatrolPoints() {
+		synchronized (targetMutex) {
+			patrolPoints.removeAll();
+		}
+	}
+
+	@local
+	public int getPatrolPointSize() {
+		synchronized (targetMutex) {
+			return patrolPoints.size();
+		}
+	}
+
+	@preLocked
+	public void setHomeLocation(float x, float z, float y, @dereferenced final Quaternion direction) {
+		homeLocation.setPosition(x, z, y);
+		homeLocation.setReached(true);
+		homeLocation.setDirection(direction.getW(), direction.getX(), direction.getZ(), direction.getY());
+	}
+
+	@preLocked
+	public void setHomeObject(SceneObject home) {
+		homeObject = home;
+	}
+
+	@read
+	@local
+	@weakReference
+	public SceneObject getHomeObject() {
+		return homeObject;
+	}
+
+	public void setFollowShipObject(ShipObject ship) {
+		synchronized (targetMutex) {
+			if (this.isRetreating())
+				return;
+
+			if (ship != null && followShip != ship) {
+				setMovementState(FOLLOWING);
+
+				followShip = ship;
+			}
+		}
+	}
+
+	public void setTargetShipObject(ShipObject ship) {
+		synchronized (targetMutex) {
+			if (targetShip != ship) {
+				targetShip = ship;
+			}
+		}
+	}
+
+	@dirty
+	public boolean isRetreating() {
+		return getMovementState() == LEASHING;
+	}
+
+	@dirty
+	public boolean isFleeing() {
+		return getMovementState() == FLEEING;
+	}
+
+	/**
+	 * Sets the active defender
+	 * @pre { this object is locked }
+	 * @post { this object is locked, defender is active }
+	 * @param defender ShipObject to set as the active defender
+	 */
+	@preLocked
+	public native void setDefender(ShipObject defender);
+
+	/**
+	 * Evaluates if this can be attacked by object
+	 * @pre { }
+	 * @post { }
+	 * @return returns true if object can attack this
+	 */
+	@dirty
+	public native abstract boolean isAttackableBy(TangibleObject object);
+
+	@dirty
+	public native boolean isAttackableBy(CreatureObject object);
+
+	public native boolean addEnemyShip(unsigned long enemyShipID);
+
+	public native boolean removeEnemyShip(unsigned long enemyShipID);
+
+	@dirty
+	public native boolean isEnemyShip(unsigned long shipID);
+
+	@dirty
+	public native boolean isPlayerFactionAlly(CreatureObject player);
+
+	@dirty
+	public native boolean isPlayerFactionEnemy(CreatureObject player);
+
+	public native boolean isMissionShip() {
+		return (missionOwnerID != 0);
+	}
+
+	@preLocked
+	public void setMissionOwner(CreatureObject object) {
+		missionOwnerID = object.getObjectID();
+	}
+
+	public unsigned long getMissionOwnerID() {
+		return missionOwnerID;
+	}
+
+	@preLocked
+	public native void addSpaceFactionAlly(unsigned int factionHash);
+
+	@preLocked
+	public native void removeSpaceFactionAlly(unsigned int factionHash);
+
+	@preLocked
+	public native void addSpaceFactionEnemy(unsigned int factionHash);
+
+	@preLocked
+	public native void removeSpaceFactionEnemy(unsigned int factionHash);
+
+	@preLocked
+	public native void swapSpaceFactionAssociations();
+
+	/**
+	 * Evaluates if this creature is aggresive to the object
+	 * @pre { }
+	 * @post { }
+	 * @return returns true if its aggressive
+	 */
+	@dirty
+	public abstract native boolean isAggressiveTo(TangibleObject object);
+
+	@dirty
+	public abstract native boolean isAggressive(TangibleObject object);
+
+	/**
+	 * Set the wait time in milliseconds
+	 * will overwrite the current wait timer
+	 **/
+	@preLocked
+	public native void setWait(int wait);
+
+	/**
+	 * Sets the wait timer to current time and removes
+	 * the possible blackboard value
+	 **/
+	@preLocked
+	public native void stopWaiting();
+
+	/**
+	 * Sees if our wait time is up (won't work for indefinite waits?)
+	 **/
+	@read
+	public native boolean isWaiting();
+
+	/**
+	 * Schedules the next movement event
+	 * @pre { this is locked }
+	 * @post { this is locked }
+	 */
+	@preLocked
+	public native void activateAiBehavior(boolean reschedule = false);
+
+	/**
+	 * Stops the movement event task
+	 * @pre { this is locked }
+	 * @post { this is locked }
+	 */
+	@preLocked
+	public native void cancelBehaviorEvent();
+
+	/**
+	 * Does the main AI update tick
+	 * @pre { this object is locked }
+	 * @post { this object is locked, this AI will have performed one update tick }
+	 */
+	@preLocked
+	public native void runBehaviorTree();
+
+	@local
+	@preLocked
+	public native void handleException(@dereferenced final Exception e, final string context);
+
+	public native boolean isRunningBehavior(unsigned int id);
+	public native void addRunningID(unsigned int id);
+	public native void popRunningChain();
+	public native unsigned int peekRunningChain();
+	public native void clearRunningChain();
+	public native void setShipAiTemplate();
+
+	@local
+	@preLocked
+	public native BehaviorSpace getBehaviorTreeSpace(@dereferenced final BehaviorTreeSlotSpace slot);
+
+	@local
+	@preLocked
+	public native void setTree(BehaviorSpace subRoot, @dereferenced final BehaviorTreeSlotSpace slot);
+
+	@local
+	@preLocked
+	public native void removeTree(@dereferenced final BehaviorTreeSlotSpace slot);
+
+	@local
+	public native void writeBlackboard(final string key, @dereferenced final BlackboardDataSpace data);
+
+	@preLocked
+	public native void setShipAiDebug(boolean flag);
+
+	public native boolean getShipAiDebug();
+
+	@read
+	public unsigned int getShipBitmask() {
+		return shipBitmask;
+	}
+
+	@preLocked
+	public void setShipBitmask(unsigned int mask) {
+		shipBitmask = mask;
+	}
+
+	@read
+	public native boolean isFixedPatrolShipAgent();
+
+	@read
+	public native boolean hasSinglePatrolRotation();
+
+	@dirty
+	@preLocked
+	public native boolean sendConversationStartTo(SceneObject player);
+
+	@preLocked
+	public native void tauntPlayer(CreatureObject player, final string message);
+
+	@preLocked
+	public native void createSquadron(int formationType = -1);
+
+	@preLocked
+	public native void assignToSquadron(ShipAiAgent squadronAgent);
+
+	@preLocked
+	public native void dropFromSquadron();
+
+	public native boolean isSquadronLeader();
+
+	public native boolean isSquadronMember();
+
+	public native boolean isSquadronTransform();
+
+	public native int getSquadronSize();
+
+	public SquadronObserver getSquadron() {
+		return squadron;
+	}
+
+	@dirty
+	public void setConversationTemplate(unsigned int convoTemplateCrc) {
+		conversationTemplate = convoTemplateCrc;
+	}
+
+	@dirty
+	public void setConversationMobile(unsigned int mobile) {
+		conversationMobile = mobile;
+	}
+
+	@dirty
+	public void setConversationMessage(unsigned int message) {
+		conversationMessage = message;
+	}
+
+	public void setMinimumGuardPatrol(float min) {
+		minGuardPatrol = min;
+	}
+
+	public void setMaximumGuardPatrol(float max) {
+		maxGuardPatrol = max;
+	}
+
+	@preLocked
+	public native void addShipFlag(unsigned int option);
+
+	@preLocked
+	public native void removeShipFlag(unsigned int option);
+
+	public native boolean isDisabledInvulnerable();
+
+	public native void addFixedPatrolPoint(unsigned int pointHash);
+
+	public native void clearFixedPatrolPoints();
+
+	@preLocked
+	public native void destroyObjectFromWorld(boolean sendSelfDestroy);
+
+	@read
+	public boolean getDespawnOnNoPlayerInRange() {
+		return despawnOnNoPlayerInRange;
+	}
+
+	@local
+	@dirty
+	public Time getAlertedTime() {
+		return alertedTime;
+	}
+
+	@local
+	@dirty
+	public Time getAggroDelay() {
+		return aggroDelay;
+	}
+
+	@local
+	@dirty
+	public Time getEvadeDelay() {
+		return evadeDelay;
+	}
+
+	@dirty
+	public abstract int getNumberOfPlayersInRange() {
+		return numberOfPlayersInRange.get();
+	}
+
+	public int getExperienceValue() {
+		return experienceValue;
+	}
+
+	public float getLootChance() {
+		return lootChance;
+	}
+
+	public int getLootRolls() {
+		return lootRolls;
+	}
+
+	@dereferenced
+	public native string getLootTable();
+
+	public int getMinLootCredits() {
+		return minCredits;
+	}
+
+	public int getMaxLootCredits() {
+		return maxCredits;
+	}
+
+	public int getImperialFactionReward() {
+		return imperialFactionReward;
+	}
+
+	public int getRebelFactionReward() {
+		return rebelFactionReward;
+	}
+
+	public unsigned int getConversationTemplate() {
+		return conversationTemplate;
+	}
+
+	public unsigned int getConversationMobile() {
+		return conversationMobile;
+	}
+
+	public unsigned int getConversationMessage() {
+		return conversationMessage;
+	}
+
+	public float getMinimumGuardPatrol() {
+		return minGuardPatrol;
+	}
+
+	public float getMaximumGuardPatrol() {
+		return maxGuardPatrol;
+	}
+
+	@preLocked
+	public native void setDespawnOnNoPlayerInRange(boolean val);
+
+	/**
+	 * Schedules despawn of the AiAgent.
+	 * @param timeToDespawn the time to despawn the AiAgent in seconds.
+	 */
+	@preLocked
+	public native void scheduleDespawn(int timeToDespawn, boolean force = false);
+
+	@preLocked
+	public native void scheduleDestroyDisabled();
+
+	@preLocked
+	public void clearDespawnEvent() {
+		despawnEvent = null;
+	}
+
+	@preLocked
+	@dereferenced
+	@local
+	public boolean peekBlackboard(final string key) {
+		return blackboard.contains(key);
+	}
+
+	@preLocked
+	@dereferenced
+	@local
+	public BlackboardDataSpace readBlackboard(final string key) {
+		return blackboard.get(key);
+	}
+
+	@preLocked
+	@local
+	public void eraseBlackboard(final string key) {
+		blackboard.drop(key);
+	}
+
+	@preLocked
+	@local
+	public void wipeBlackboard() {
+		blackboard.removeAll();
+	}
+
+	@preLocked
+	public void setCustomShipAiMap(unsigned long customMap) {
+		customShipAiMap = customMap;
+	}
+
+	@local
+	@dirty
+	public SpacePatrolPoint getHomeLocation() {
+		return homeLocation;
+	}
+
+	@dirty
+	@nativeStub
+	@local
+	public native ShipAiAgent asShipAiAgent();
+
+	@dirty
+	public boolean isShipAiAgent() {
+		return true;
+	}
+
+	@read
+	public boolean isAggroDelayPast() {
+		return aggroDelay.isPast();
+	}
+
+	@read
+	public boolean isEvadeDelayPast() {
+		return evadeDelay.isPast();
+	}
+
+	public int getMovementCount() {
+		return movementCount;
+	}
+
+	void setMovementCount(int val) {
+		movementCount = val;
+	}
+
+	public native boolean checkLineOfSight(SceneObject obj);
+
+	public native void sendDebugMessage();
+
+	public native void sendDebugPath();
+
+	@preLocked
+	public native boolean validateTarget();
+
+	@preLocked
+	public native boolean validateTarget(ShipObject targetShip);
+
+	/**
+	* Is called when this object is destroyed
+	* @pre { this, attacker locked }
+	* @post { this, attacker locked }
+	*/
+	@preLocked
+	@arg1preLocked
+	public native int notifyObjectDestructionObservers(TangibleObject attacker, int condition, boolean isCombatAction);
+
+	@preLocked
+	public native void sendReactionChat(SceneObject object, int type, int state = 0, boolean force = false);
+
+	@local
+	@dereferenced
+	public native Vector<unsigned int> getActiveWeaponVector();
+
+	@local
+	public native boolean fireWeaponAtTarget(ShipObject targetShip, unsigned int slot, unsigned int targetSlot);
+
+	@local
+	public native boolean fireProjectileAtTarget(ShipObject targetShip, final ShipProjectileData projectileData, unsigned int slot, unsigned int targetSlot);
+
+	@local
+	public native boolean fireMissileAtTarget(ShipObject targetShip, final ShipProjectileData projectileData, final ShipMissileData missileData, unsigned int slot, unsigned int targetSlot);
+
+	@local
+	public native boolean fireTurretAtTarget(ShipObject targetShip, final ShipProjectileData projectileData, final ShipTurretData turretData, unsigned int slot, unsigned int targetSlot);
+
+	public native float getWeaponRefireDeltaTime(unsigned int slot);
+
+	public native void setWeaponRefireDeltaTime(unsigned int slot);
+
+	@local
+	@dereferenced
+	public native Vector3 getHomePosition();
+
+	@read
+	public float getEscortSpeed() {
+		return escortSpeed;
+	}
+
+	@preLocked
+	public void setEscortSpeed(float speed) {
+		escortSpeed = speed;
+	}
+
+	public native string getShipAgentTemplateName();
+
+	@dirty
+	public native abstract float getOutOfRangeDistance(unsigned long specialRangeObjectID = 0);
+
+	@dirty
+	public native abstract float getInRangeDistance(boolean lightUpdate);
+
+	@local
+	public native abstract void updateZone(boolean lightUpdate, boolean sendPackets = true);
+
+	@preLocked
+	public native abstract void doRecovery(int latency);
+
+	public native abstract void notifyRemoveFromZone();
+
+	// Infinity: JTL attackability stubs
+	@dirty
+	public boolean isDestroying() {
+		return false;
+	}
+
+	@dirty
+	public boolean isInvulnerable() {
+		return false;
+	}
+}

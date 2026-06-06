@@ -1,0 +1,4 @@
+object_building_tatooine_cloning_facility_tatooine_small_dark = object_building_tatooine_shared_cloning_facility_tatooine_small_dark:new {
+
+}
+ObjectTemplates:addTemplate(object_building_tatooine_cloning_facility_tatooine_small_dark, "object/building/tatooine/cloning_facility_tatooine_small_dark.iff")

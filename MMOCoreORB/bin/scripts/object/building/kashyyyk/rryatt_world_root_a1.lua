@@ -1,0 +1,4 @@
+object_building_kashyyyk_rryatt_world_root_a1 = object_building_kashyyyk_shared_rryatt_world_root_a1:new {
+        gameObjectType = 5
+}
+ObjectTemplates:addTemplate(object_building_kashyyyk_rryatt_world_root_a1, "object/building/kashyyyk/rryatt_world_root_a1.iff")

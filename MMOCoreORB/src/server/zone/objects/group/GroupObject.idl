@@ -1,0 +1,229 @@
+/*
+				Copyright <SWGEmu>
+		See file COPYING for copying conditions.*/
+
+package server.zone.objects.group;
+
+import server.zone.objects.scene.SceneObject;
+import server.zone.objects.creature.CreatureObject;
+import server.zone.objects.ship.ShipObject;
+import server.chat.room.ChatRoom;
+import engine.service.proto.BaseMessage;
+include server.zone.objects.group.GroupList;
+include server.zone.managers.group.GroupManager;
+include server.zone.objects.group.tasks.UpdateNearestMissionForGroupTask;
+include server.chat.StringIdChatParameter;
+include system.lang.ref.Reference;
+include system.util.VectorMap;
+include server.zone.objects.scene.variables.DeltaVectorMap;
+
+@json
+class GroupObject extends SceneObject {
+	@dereferenced
+	GroupList groupMembers;
+
+	@dereferenced
+	protected DeltaVectorMap<unsigned long, unsigned long> groupMemberShips;
+
+	@dereferenced
+	transient VectorMap<unsigned int, Reference<UpdateNearestMissionForGroupTask> > updateNearestMissionForGroupTasks;
+
+	ChatRoom chatRoom;
+
+	int groupLevel;
+	int factionPetLevel;
+
+	int lootRule;
+
+	unsigned long masterLooterID;
+
+	public GroupObject() {
+		groupLevel = 0;
+		factionPetLevel = 0;
+
+		Logger.setLoggingName("GroupObject");
+
+		chatRoom = null;
+
+		lootRule = GroupManager.FREEFORALL;
+		masterLooterID = 0;
+	}
+
+	@dirty
+	public native void sendBaselinesTo(SceneObject player);
+
+	@dirty
+	@local
+	public native void broadcastMessage(BaseMessage msg, int messageType = 0);	//Infinity:  messageType 1 = Harvest, 2 = Loot
+
+	@dirty
+	@local
+	public native void broadcastMessage(CreatureObject player, BaseMessage msg, boolean sendSelf = false, int messageType = 0);	//Infinity:  messageType 1 = Harvest, 2 = Loot
+
+	@dirty
+	public native void updatePvPStatusNearCreature(CreatureObject creature);
+
+	@local
+	@dirty
+	public native void sendSystemMessage(@dereferenced StringIdChatParameter param, boolean sendLeader = true, int messageType = 0);  //Infinity:  messageType 1 = Harvest, 2 = Loot
+	@dirty
+	public native void sendSystemMessage(final string fullPath, boolean sendLeader = true, int messageType = 0);	//Infinity:  messageType 1 = Harvest, 2 = Loot
+	@local
+	@dirty
+	public native void sendSystemMessage(@dereferenced StringIdChatParameter param, CreatureObject excluded, int messageType = 0);	//Infinity:  messageType 1 = Harvest, 2 = Loot
+
+	@preLocked
+	public native void addMember(CreatureObject newMember, boolean notify = true);
+
+	@preLocked
+	public native void removeMember(CreatureObject member);
+
+	@preLocked
+	public native void disband();
+
+	@preLocked
+	public native void makeLeader(CreatureObject player);
+
+	@dirty
+	public native boolean hasMember(CreatureObject member);
+
+	@dirty
+	public native boolean hasMember(unsigned long member);
+
+	@preLocked
+	public native void updateMemberShip(CreatureObject member, ShipObject ship);
+
+	@preLocked
+	public native void startChatRoom(CreatureObject leader);
+
+	@preLocked
+	public native void destroyChatRoom();
+
+	@dirty
+	public native float getGroupHarvestModifier(CreatureObject player);
+
+	@dirty
+	@preLocked
+	public native void calculateGroupLevel();
+
+	@read
+	public int getGroupLevel(boolean includeFactionPets = true) {
+		if (includeFactionPets)
+			return groupLevel;
+		else
+			return groupLevel - factionPetLevel;
+	}
+
+	@read
+	public int getFactionPetLevel() {
+		return factionPetLevel;
+	}
+
+	@read
+	public ChatRoom getChatRoom() {
+		return chatRoom;
+	}
+
+	@dirty
+	public int getGroupSize() {
+		return groupMembers.size();
+	}
+
+	@dirty
+	public native int getNumberOfPlayerMembers();
+
+	@reference
+	@dirty
+	public CreatureObject getGroupMember(int index) {
+		return groupMembers.getSafe(index);
+	}
+
+	@reference
+	@dirty
+	public CreatureObject getLeader() {
+		if (groupMembers.size() == 0) {
+			return null;
+		} else {
+			return groupMembers.getSafe(0);
+		}
+	}
+
+	@preLocked
+	public native boolean initializeLeader(CreatureObject leader, CreatureObject member);
+
+	@local
+	@dirty
+	public native unsigned long getLeaderID();
+
+	@local
+	@dirty
+	public GroupList getGroupList() {
+		return groupMembers;
+	}
+
+	@local
+	@dirty
+	@final
+	public DeltaVectorMap<unsigned long, unsigned long> getGroupShips() {
+		return groupMemberShips;
+	}
+
+	@dirty
+	public boolean isGroupObject() {
+		return true;
+	}
+
+	@dirty
+	public native boolean hasSquadLeader();
+
+	public native void addGroupModifiers();
+
+	@preLocked
+	public native void removeGroupModifiers();
+
+	@preLocked
+	@arg1preLocked
+	private native void addGroupModifiers(CreatureObject player);
+
+	@preLocked
+	private native void removeGroupModifiers(CreatureObject player, boolean isLeader);
+
+	@dirty
+	public native boolean isOtherMemberPlayingMusic(CreatureObject player);
+
+	@read
+	public int getLootRule() {
+		return lootRule;
+	}
+
+	@preLocked
+	public void setLootRule(int newRule) {
+		lootRule = newRule;
+	}
+
+	@read
+	public unsigned long getMasterLooterID() {
+		return masterLooterID;
+	}
+
+	@preLocked
+	public void setMasterLooterID(unsigned long newID) {
+		masterLooterID = newID;
+	}
+
+	public boolean checkMasterLooter(CreatureObject object) {
+		return object.getObjectID() == masterLooterID;
+	}
+
+	@preLocked
+	public native void scheduleUpdateNearestMissionForGroup(unsigned int planetCRC);
+
+	public native void updateLootRules();
+
+	// Infinity: JTL space mission propagation
+	@preLocked
+	public native void addSpaceMissionObject(unsigned long missionOwnerID, unsigned long objectID, boolean notifyClient);
+
+	@preLocked
+	public native void removeSpaceMissionObject(unsigned long missionOwnerID, unsigned long objectID, boolean notifyClient);
+}

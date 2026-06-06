@@ -1,0 +1,4 @@
+object_building_military_military_rebel_tactical_center_dark = object_building_military_shared_military_rebel_tactical_center_dark:new {
+
+}
+ObjectTemplates:addTemplate(object_building_military_military_rebel_tactical_center_dark, "object/building/military/military_rebel_tactical_center_dark.iff")

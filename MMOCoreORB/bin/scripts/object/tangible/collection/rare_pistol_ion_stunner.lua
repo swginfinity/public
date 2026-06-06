@@ -1,0 +1,3 @@
+object_tangible_collection_rare_pistol_ion_stunner = object_tangible_collection_shared_rare_pistol_ion_stunner:new {
+}
+ObjectTemplates:addTemplate(object_tangible_collection_rare_pistol_ion_stunner, "object/tangible/collection/rare_pistol_ion_stunner.iff")

@@ -1,0 +1,2328 @@
+/*
+				Copyright <SWGEmu>
+		See file COPYING for copying conditions.
+
+	Infinity: Death Watch PvP Manager
+
+	Handles Death Watch faction PvP including:
+	- War state management (which factions can attack each other)
+	- Kill/death XP calculations and awards
+	- TEF application during combat
+	- Integration with existing PvP systems
+*/
+
+package server.zone.managers.death_watch;
+
+import engine.core.ManagedService;
+import server.zone.ZoneServer;
+import server.zone.Zone;
+import server.zone.objects.scene.SceneObject;
+import server.zone.objects.creature.CreatureObject;
+import server.zone.objects.player.PlayerObject;
+import server.zone.objects.tangible.TangibleObject;
+import server.zone.objects.tangible.weapon.WeaponObject;
+include engine.log.Logger;
+include templates.faction.DeathWatchFactions;
+
+@dirty
+class DeathWatchManager extends ManagedService implements Logger {
+	protected ZoneServer zoneServer;
+
+	// War state: which factions are currently at war
+	// Bit flags for pairings: 0 = peace, 1 = war
+	// War mode: 0 = 2v2 (two wars), 1 = free-for-all
+	protected byte warMode;
+
+	// In 2v2 mode: war1 = (faction1 vs faction2), war2 = (faction3 vs faction4)
+	// Faction IDs: 1=Xon, 2=Sun, 3=Krr, 4=Zan
+	protected byte war1Faction1;
+	protected byte war1Faction2;
+	protected byte war2Faction1;
+	protected byte war2Faction2;
+
+	// Note: XP calculation uses rank-based system (sum of all faction boxes)
+	// Legacy XP matrices are deprecated but kept for reference in cpp file
+
+	// Config values loaded from Lua
+	protected float noMasteryMultiplier;       // XP multiplier when player lacks required mastery
+	protected int standingFullRewards;          // Standing threshold for 100% XP
+	protected int standingMinorPenalty;         // Standing threshold for 90% XP
+	protected int standingSignificantPenalty;   // Standing threshold for 50% XP
+	protected int standingHeavyPenalty;         // Standing threshold for 25% XP
+	protected int standingNoGains;              // Standing threshold for 0% XP
+	protected int standingPvpXpFloor;           // Hard floor - must be above this for any XP
+	protected int dwTefDurationMs;              // DW TEF duration in milliseconds
+
+	// Faction standing changes for PvP
+	protected int standingEnemyKill;
+	protected int standingDeath;
+	protected int standingAlliedKill;
+	protected int standingTraitorKill;
+
+	// Gank protection
+	protected int gankAttackerThreshold;
+	protected int gankDeathXp;
+	protected int gankSurvivalBonus;
+
+	// Rank-based XP system (replaces old matrix system)
+	protected int baseKillXp;                    // Base XP for equal-rank kill (4000)
+	protected int baseDeathXp;                   // Base XP loss for equal-rank death (1500)
+	protected float rankKillMultPerRankUp;       // Bonus per rank when killing higher (+10%)
+	protected float rankKillMultPerRankDown;     // Penalty per rank when killing lower (-8%)
+	protected float rankKillMultMin;             // Floor multiplier (10%)
+	protected float rankKillMultMax;             // Cap multiplier (200%)
+	protected float rankDeathMultPerRankUp;      // Reduced loss per rank dying to higher (-7.5%)
+	protected float rankDeathMultPerRankDown;    // Increased loss per rank dying to lower (+5%)
+	protected float rankDeathMultMin;            // Floor multiplier (25%)
+	protected float rankDeathMultMax;            // Cap multiplier (150%)
+	protected float bountyKillMultiplier;        // Hunter XP multiplier for bounty kill (1.5x)
+	protected float bountyDeathMultiplier;       // Mark loss multiplier for bounty death (0.5x)
+
+	// Anti-farming cooldowns (in milliseconds)
+	protected int farmingCooldownBase;  // Base cooldown per target (1 hour)
+
+	// Warmup period - first N kills earn 0 XP
+	protected int warmupKillCount;
+
+	// Session abuse detection
+	protected int sessionWarnThreshold;     // Short sessions in 1 hour for warning
+	protected int sessionFreezeThreshold;   // Short sessions in 1 day for freeze
+	protected int suspiciousSessionMinMs;   // Sessions shorter than this are suspicious
+
+	// Colluder detection - pairs of players who hunt together
+	protected int colluderJointKillThreshold;  // Joint kills to flag as colluders (default 3)
+	protected int colluderTrackingWindowMs;    // Time window for joint kill tracking (1 hour)
+	protected int colluderMaxTrackedKills;     // Max kills to track per pair (FIFO cleanup)
+
+	// Note: Combat participant tracking, target cooldowns, active account maps,
+	// and colluder tracking are declared in DeathWatchManagerImplementation.cpp
+	// as they require HashMaps/VectorMaps
+
+	// Test server mode - allows same-account attacks for testing
+	protected boolean isTestServer;
+
+	// Kill switch - emergency shutdown for Death Watch system
+	// When active, isDeathWatch() returns false for ALL players
+	protected boolean killSwitchActive;
+
+	// Mk4 Ground Striker config (loaded from Lua)
+	protected int mk4StunDuration;       // Stun (dizzy) duration in seconds
+	protected int mk4BlindDuration;      // Blind duration in seconds
+	protected int mk4HudDisableDuration; // HUD disable duration in seconds
+
+	// Heavy Weapons config (loaded from Lua)
+	// Hit calculation
+	protected float heavyBaseAccuracy;
+	protected float heavyAccBonus;
+	protected float heavyEvasionPenalty;
+	protected float heavyMinHitChance;
+	protected float heavyMaxHitChance;
+
+	// Damage calculation
+	protected float heavyPotBonus;
+	protected float heavyDeflectionReduction;
+	protected int heavyToughnessCap;
+
+	// Weapon multipliers
+	protected float heavyRocketMultiplier;
+	protected float heavyParticleMultiplier;
+	protected float heavyAcidMultiplier;
+	protected float heavyLightningMultiplier;
+
+	// Particle Beam "Mand'alor's Grip" config
+	protected float pbBasePerTick;
+	protected float pbPotTickScaling;
+	protected float pbRecoveryTickScaling;
+	protected float pbMinTickReduction;
+	protected float pbMaxTickReduction;
+	protected int pbTickIntervalMs;
+	protected int pbNumTicks;
+
+	protected float pbBasePeakDuration;
+	protected float pbPotPeakScaling;
+	protected float pbRecoveryPeakScaling;
+	protected float pbMinPeakDuration;
+	protected float pbMaxPeakDuration;
+
+	protected float pbBaseImmunity;
+	protected float pbRecoveryImmunityBonus;
+
+	public DeathWatchManager(ZoneServer server) {
+		zoneServer = server;
+
+		// Default war mode: 2v2
+		warMode = 0;
+		war1Faction1 = DeathWatchFactions.XON;
+		war1Faction2 = DeathWatchFactions.SUN;
+		war2Faction1 = DeathWatchFactions.KRR;
+		war2Faction2 = DeathWatchFactions.ZAN;
+
+		// Default config values (will be overridden by Lua)
+		noMasteryMultiplier = 0.6f;
+		standingFullRewards = 5000;
+		standingMinorPenalty = 4900;
+		standingSignificantPenalty = 4000;
+		standingHeavyPenalty = 1;
+		standingNoGains = 0;
+		standingPvpXpFloor = 1000;
+		dwTefDurationMs = 300000; // 5 minutes
+
+		standingEnemyKill = 15;
+		standingDeath = -8;
+		standingAlliedKill = -25;
+		standingTraitorKill = -50;
+
+		gankAttackerThreshold = 4;
+		gankDeathXp = -100;
+		gankSurvivalBonus = 5000;
+
+		// Rank-based XP system defaults (will be overridden by Lua)
+		baseKillXp = 4000;
+		baseDeathXp = 1500;
+		rankKillMultPerRankUp = 0.10f;
+		rankKillMultPerRankDown = 0.08f;
+		rankKillMultMin = 0.10f;
+		rankKillMultMax = 2.00f;
+		rankDeathMultPerRankUp = 0.075f;
+		rankDeathMultPerRankDown = 0.05f;
+		rankDeathMultMin = 0.25f;
+		rankDeathMultMax = 1.50f;
+		bountyKillMultiplier = 1.5f;
+		bountyDeathMultiplier = 0.5f;
+
+		farmingCooldownBase = 3600000;  // 1 hour in ms
+		warmupKillCount = 10;
+
+		sessionWarnThreshold = 3;
+		sessionFreezeThreshold = 6;
+		suspiciousSessionMinMs = 300000;  // 5 minutes
+
+		colluderJointKillThreshold = 3;           // 3 joint kills to flag
+		colluderTrackingWindowMs = 3600000;       // 1 hour window
+		colluderMaxTrackedKills = 20;             // FIFO: keep last 20 kills per pair
+
+		isTestServer = false;
+		killSwitchActive = false;
+
+		// Mk4 Ground Striker defaults (will be overridden by Lua)
+		mk4StunDuration = 5;        // 5 seconds
+		mk4BlindDuration = 5;       // 5 seconds
+		mk4HudDisableDuration = 20; // 20 seconds
+
+		// Heavy Weapons defaults (will be overridden by Lua)
+		heavyBaseAccuracy = 60.0f;
+		heavyAccBonus = 0.003f;
+		heavyEvasionPenalty = 0.0025f;
+		heavyMinHitChance = 30.0f;
+		heavyMaxHitChance = 90.0f;
+
+		heavyPotBonus = 0.005f;
+		heavyDeflectionReduction = 0.003f;
+		heavyToughnessCap = 50;
+
+		heavyRocketMultiplier = 1.0f;
+		heavyParticleMultiplier = 1.0f;
+		heavyAcidMultiplier = 0.7f;
+		heavyLightningMultiplier = 0.7f;
+
+		// Particle Beam defaults
+		pbBasePerTick = 3.0f;
+		pbPotTickScaling = 0.03f;
+		pbRecoveryTickScaling = 0.02f;
+		pbMinTickReduction = 1.0f;
+		pbMaxTickReduction = 6.0f;
+		pbTickIntervalMs = 5000;
+		pbNumTicks = 4;
+
+		pbBasePeakDuration = 10.0f;
+		pbPotPeakScaling = 0.15f;
+		pbRecoveryPeakScaling = 0.12f;
+		pbMinPeakDuration = 5.0f;
+		pbMaxPeakDuration = 25.0f;
+
+		pbBaseImmunity = 120.0f;
+		pbRecoveryImmunityBonus = 0.5f;
+
+		Logger.setLoggingName("DeathWatchManager");
+	}
+
+	public native void initialize();
+
+	/**
+	 * Load configuration from Lua file
+	 */
+	private native void loadLuaConfig();
+
+	/**
+	 * Start the PvP refresh task for self-correction
+	 */
+	private native void startPvpRefreshTask();
+
+	/**
+	 * Helper function to get hidden bonus values from Lua config
+	 * Searches dwHiddenTemplateBonuses table for matching skill and bonus type
+	 * @param player - The player to check skills for
+	 * @param attackType - Attack type key (mk1, rocket, etc.)
+	 * @param bonusType - Bonus type (damageReduction, evasionChance, etc.)
+	 * @param isDefender - true if player is defending
+	 * @param specificEffect - For specialEffect type, the effect name to look for
+	 * @return Bonus value, or 0.0 if no bonus found
+	 */
+	@dirty
+	private native float getHiddenBonusFromLua(CreatureObject player, final string attackType,
+			final string bonusType, boolean isDefender, final string specificEffect);
+
+	/**
+	 * Check if two DW factions are currently at war
+	 * @param faction1 - First faction ID (1-4)
+	 * @param faction2 - Second faction ID (1-4)
+	 * @return true if factions can attack each other
+	 */
+	@read
+	public native boolean areFactionsAtWar(byte faction1, byte faction2);
+
+	/**
+	 * Check if two players can attack each other based on DW rules
+	 * Both must be DW, have factions, and be at war (or one is an Oathbreaker)
+	 * @param player1 - First player
+	 * @param player2 - Second player
+	 * @return true if players can attack each other
+	 */
+	@dirty
+	public native boolean canPlayersAttack(CreatureObject player1, CreatureObject player2);
+
+	/**
+	 * Check if a player is currently an Oathbreaker
+	 * Oathbreakers are players who hid in their faction HQ for 30+ minutes
+	 * They can be attacked by their own faction members
+	 * @param player - The player to check
+	 * @return true if player is an Oathbreaker
+	 */
+	@dirty
+	public native boolean isOathbreaker(CreatureObject player);
+
+	/**
+	 * Call Lua dw_oathbreaker:handleOathbreakerKill
+	 * Checks if victim is an oathbreaker and handles the special kill logic
+	 * (pays bounty, makes victim houseless, broadcasts message)
+	 * @param killer - The player who killed
+	 * @param victim - The player who died
+	 * @return true if this was an oathbreaker kill (handled specially), false otherwise
+	 */
+	@dirty
+	public native boolean callLuaOathbreakerKill(CreatureObject killer, CreatureObject victim);
+
+	/**
+	 * Handle a Death Watch player kill
+	 * Called from PlayerManagerImplementation after PLAYERKILLED observer fires
+	 * Calculates and awards XP, applies faction standing changes
+	 * @param killer - The player who killed (highest damage dealer)
+	 * @param victim - The player who died
+	 */
+	public native void handlePlayerKill(CreatureObject killer, CreatureObject victim);
+
+	/**
+	 * Apply DW TEF to a player (marks them as in active DW combat)
+	 * @param player - The player to apply TEF to
+	 */
+	public native void applyDwTef(CreatureObject player);
+
+	/**
+	 * Get the XP type string for a faction
+	 * @param faction - Faction ID (1-4)
+	 * @return XP type string (e.g., "dw_xon")
+	 */
+	@local
+	private native string getXpTypeForFaction(byte faction);
+
+	/**
+	 * Get the short faction key for a faction (used in Lua screenplay data)
+	 * @param faction - Faction ID (1-4)
+	 * @return Faction key (e.g., "xon", "sun", "krr", "zan")
+	 */
+	@local
+	private native string getFactionKey(byte faction);
+
+	/**
+	 * Get the faction standing key for a faction
+	 * @param faction - Faction ID (1-4)
+	 * @return Faction standing key (e.g., "xonti_brothers")
+	 */
+	@local
+	private native string getFactionStandingKey(byte faction);
+
+	/**
+	 * Get player's current box level for their faction (0-4)
+	 * @param player - The player
+	 * @param faction - Their faction ID
+	 * @return Box level (0 = novice only, 1-4 = progression boxes)
+	 */
+	@dirty
+	private native int getPlayerBox(CreatureObject player, byte faction);
+
+	/**
+	 * Get total rank across all 4 factions
+	 * Rank = sum of all faction boxes + 1 (range: 1-17)
+	 * Used for rank-based XP calculations
+	 * @param player - The player
+	 * @return Total rank (1 = novice only, 17 = all Box 4s)
+	 */
+	@dirty
+	private native int getTotalRank(CreatureObject player);
+
+	/**
+	 * Calculate kill XP based on rank difference
+	 * @param killerRank - Killer's total rank (1-17)
+	 * @param victimRank - Victim's total rank (1-17)
+	 * @param isBountyKill - true if this is a bounty kill
+	 * @return XP to award (positive)
+	 */
+	@read
+	private native int calculateRankKillXp(int killerRank, int victimRank, boolean isBountyKill);
+
+	/**
+	 * Calculate death XP loss based on rank difference
+	 * @param victimRank - Victim's total rank (1-17)
+	 * @param killerRank - Killer's total rank (1-17)
+	 * @param isBountyDeath - true if victim was a bounty mark
+	 * @return XP to lose (negative)
+	 */
+	@read
+	private native int calculateRankDeathXp(int victimRank, int killerRank, boolean isBountyDeath);
+
+	/**
+	 * Check if player has a valid mastery for their faction
+	 * @param player - The player
+	 * @param faction - Their faction ID
+	 * @return true if player has required mastery
+	 */
+	@dirty
+	private native boolean hasValidMastery(CreatureObject player, byte faction);
+
+	/**
+	 * Calculate XP multiplier based on faction standing
+	 * @param standing - Current faction standing
+	 * @return Multiplier (0.0 to 1.0)
+	 */
+	@read
+	private native float getStandingMultiplier(int standing);
+
+	/**
+	 * Calculate death XP multiplier based on faction standing (for losses)
+	 * @param standing - Current faction standing
+	 * @return Multiplier (1.0 to 1.5)
+	 */
+	@read
+	private native float getDeathStandingMultiplier(int standing);
+
+	/**
+	 * Check if player can earn PvP XP (above standing floor)
+	 * @param player - The player
+	 * @param faction - Their faction ID
+	 * @return true if player can earn XP
+	 */
+	@dirty
+	private native boolean canEarnPvpXp(CreatureObject player, byte faction);
+
+	/**
+	 * Award or remove XP from a player
+	 * @param player - The player
+	 * @param faction - Their faction ID
+	 * @param amount - XP amount (positive to add, negative to remove)
+	 */
+	private native void awardXp(CreatureObject player, byte faction, int amount);
+
+	/**
+	 * Check and apply skill demotion if XP dropped below threshold
+	 * @param player - The player
+	 * @param faction - Their faction ID
+	 */
+	private native void checkDemotion(CreatureObject player, byte faction);
+
+	/**
+	 * Set war mode and pairings
+	 * @param mode - 0 = 2v2, 1 = free-for-all
+	 */
+	public native void setWarMode(byte mode);
+
+	/**
+	 * Set 2v2 war pairings
+	 * @param w1f1 - War 1 faction 1
+	 * @param w1f2 - War 1 faction 2
+	 * @param w2f1 - War 2 faction 1
+	 * @param w2f2 - War 2 faction 2
+	 */
+	public native void setWarPairings(byte w1f1, byte w1f2, byte w2f1, byte w2f2);
+
+	/**
+	 * Get current war mode
+	 * @return 0 = 2v2, 1 = free-for-all
+	 */
+	@read
+	public byte getWarMode() {
+		return warMode;
+	}
+
+	/**
+	 * Check if player is a Death Watch member
+	 * NOTE: Returns false for ALL players when kill switch is active
+	 * @param player - The player to check
+	 * @return true if player is DW (has dwFaction set and DW skill)
+	 */
+	@dirty
+	public native boolean isDeathWatch(CreatureObject player);
+
+	/**
+	 * Check if the kill switch is active
+	 * When active, Death Watch system is disabled (isDeathWatch returns false for all)
+	 * @return true if kill switch is active
+	 */
+	@read
+	public boolean isKillSwitchActive() {
+		return killSwitchActive;
+	}
+
+	/**
+	 * Set the kill switch state
+	 * This is an emergency shutdown - when active, all DW mechanics are disabled
+	 * @param active - true to disable Death Watch, false to enable
+	 */
+	public native void setKillSwitch(boolean active);
+
+	/**
+	 * Check if player has DW novice skill (without faction requirement)
+	 * Use this for basic DW features like clone window where faction isn't required
+	 * @param player - The player to check
+	 * @return true if player has combat_death_watch_novice skill
+	 */
+	@dirty
+	public native boolean hasDwNoviceSkill(CreatureObject player);
+
+	/**
+	 * Check if a Death Watch player is allowed to learn a skill
+	 * Calls out to Lua DeathWatchManager:canLearnSkill for validation
+	 * @param creature - The player attempting to learn
+	 * @param skillName - The skill being learned
+	 * @return true if allowed, false if blocked
+	 */
+	@dirty
+	public native boolean canLearnSkill(CreatureObject creature, final string skillName);
+
+	/**
+	 * Get the DW TEF duration in milliseconds
+	 */
+	@read
+	public int getDwTefDuration() {
+		return dwTefDurationMs;
+	}
+
+	// ============================================================================
+	// MOUNTED COMBAT (SADDLE SHOT)
+	// ============================================================================
+
+	/**
+	 * Check if a combat command is allowed while mounted on a DW jetpack
+	 * Calls Lua DeathWatchManager:isCommandAllowedWhileMounted
+	 * @param commandName - The command being executed (lowercase)
+	 * @return true if allowed, false if blocked
+	 */
+	@dirty
+	public native boolean isCommandAllowedWhileMounted(final string commandName);
+
+	/**
+	 * Get the damage multiplier for mounted combat
+	 * Calls Lua DeathWatchManager:getMountedCombatDamageMultiplier
+	 * @return Damage multiplier (e.g., 0.75 for 25% less damage)
+	 */
+	@dirty
+	public native float getMountedCombatDamageMultiplier();
+
+	/**
+	 * Get the accuracy modifier for mounted combat
+	 * Calls Lua DeathWatchManager:getMountedCombatAccuracyModifier
+	 * @return Accuracy modifier (e.g., -25 for 25 less accuracy)
+	 */
+	@dirty
+	public native int getMountedCombatAccuracyModifier();
+
+	/**
+	 * Check if player is on a Death Watch jetpack (not a regular mount)
+	 * @param player - The player to check
+	 * @return true if on DW jetpack
+	 */
+	@dirty
+	public native boolean isOnDeathWatchJetpack(CreatureObject player);
+
+	// ============================================================================
+	// JETPACK INVULNERABILITY
+	// ============================================================================
+
+	/**
+	 * Check if a vehicle (jetpack) is currently invulnerable
+	 * @param vehicleID - The object ID of the vehicle to check
+	 * @return true if vehicle is invulnerable
+	 */
+	@dirty
+	public native boolean isJetpackInvulnerable(unsigned long vehicleID);
+
+	/**
+	 * Set a jetpack as invulnerable for a duration
+	 * @param vehicleID - The object ID of the vehicle
+	 * @param durationMs - Duration in milliseconds
+	 */
+	public native void setJetpackInvulnerable(unsigned long vehicleID, int durationMs);
+
+	/**
+	 * Remove invulnerability from a jetpack
+	 * @param vehicleID - The object ID of the vehicle
+	 */
+	public native void removeJetpackInvulnerability(unsigned long vehicleID);
+
+	/**
+	 * Check if target is a valid target for DW jetpack mounted combat
+	 * Valid targets: enemy DW player, their pet, or their vehicle
+	 * @param attacker - The attacking DW player on jetpack
+	 * @param target - The potential target
+	 * @return true if target is valid for DW jetpack combat
+	 */
+	@dirty
+	public native boolean isValidDwJetpackTarget(CreatureObject attacker, TangibleObject target);
+
+	// ============================================================================
+	// ANTI-ABUSE TRACKING METHODS
+	// ============================================================================
+
+	/**
+	 * Check if killer and victim are on the same account (anti-alt-abuse)
+	 * @param killer - The killer
+	 * @param victim - The victim
+	 * @return true if same account
+	 */
+	@dirty
+	public native boolean isSameAccount(CreatureObject killer, CreatureObject victim);
+
+	/**
+	 * Check if player is in warmup period (first N kills earn 0 XP)
+	 * @param player - The player
+	 * @return true if in warmup
+	 */
+	@dirty
+	public native boolean isInWarmup(CreatureObject player);
+
+	/**
+	 * Check if player can earn XP (not in warmup, not frozen)
+	 * @param player - The player
+	 * @return true if can earn XP
+	 */
+	@dirty
+	public native boolean canEarnXp(CreatureObject player);
+
+	/**
+	 * Check if a target is on farming cooldown
+	 * @param killer - The player who killed
+	 * @param victim - The victim
+	 * @return true if target is on cooldown (no XP should be awarded)
+	 */
+	@dirty
+	public native boolean isTargetOnCooldown(CreatureObject killer, CreatureObject victim);
+
+	/**
+	 * Record a kill for farming cooldown tracking
+	 * @param killer - The killer
+	 * @param victim - The victim
+	 * @param wasFarming - True if this was a farming violation
+	 */
+	public native void recordKillForCooldown(CreatureObject killer, CreatureObject victim, boolean wasFarming);
+
+	/**
+	 * Record a combat participant (attacker) for gank detection
+	 * @param victim - The player being attacked
+	 * @param attacker - The player attacking
+	 */
+	public native void recordCombatParticipant(CreatureObject victim, CreatureObject attacker);
+
+	/**
+	 * Get the number of attackers on a victim within the combat window
+	 * @param victim - The victim
+	 * @return Count of unique attackers
+	 */
+	@dirty
+	public native int getAttackerCount(CreatureObject victim);
+
+	/**
+	 * Check if a death was a natural gank (4+ attackers)
+	 * @param victim - The player who died
+	 * @return true if this was a gank
+	 */
+	@dirty
+	public native boolean isNaturalGank(CreatureObject victim);
+
+	/**
+	 * Clear combat participants for a player (call after death processed)
+	 * @param victim - The player
+	 */
+	public native void clearCombatParticipants(CreatureObject victim);
+
+	/**
+	 * Handle player login for DW tracking
+	 * Registers active DW session for multi-login detection
+	 * @param player - The player logging in
+	 */
+	public native void onPlayerLogin(CreatureObject player);
+
+	/**
+	 * Handle player logout for DW tracking
+	 * Checks for session abuse patterns
+	 * @param player - The player logging out
+	 */
+	public native void onPlayerLogout(CreatureObject player);
+
+	/**
+	 * Check for multiple DW logins on the same account
+	 * @param player - The player to check
+	 * @return true if another DW is already logged in on this account
+	 */
+	@dirty
+	public native boolean hasMultiLoginConflict(CreatureObject player);
+
+	/**
+	 * Get a reason string for why no XP was awarded (for messaging)
+	 * @param killer - The killer
+	 * @param victim - The victim
+	 * @return Reason description
+	 */
+	@dirty
+	@local
+	public native string getNoXpReason(CreatureObject killer, CreatureObject victim);
+
+	// ============================================================================
+	// COLLUDER DETECTION
+	// ============================================================================
+	// Detects pairs of players who frequently hunt together (3+ joint kills).
+	// Flagged colluders have XP frozen until one kills the other.
+	// Uses FIFO tracking for natural cleanup of old data.
+
+	/**
+	 * Record a joint kill for colluder detection
+	 * Called when a kill happens with combat participants
+	 * @param killer - The player who got the kill
+	 * @param victim - The victim
+	 */
+	public native void recordJointKillForColluder(CreatureObject killer, CreatureObject victim);
+
+	/**
+	 * Check if two players are flagged as colluders
+	 * @param player1 - First player
+	 * @param player2 - Second player
+	 * @return true if they are colluding partners
+	 */
+	@dirty
+	public native boolean areColluders(CreatureObject player1, CreatureObject player2);
+
+	/**
+	 * Check if player is currently flagged as a colluder
+	 * @param player - The player to check
+	 * @return true if flagged as colluder
+	 */
+	@dirty
+	public native boolean isColluder(CreatureObject player);
+
+	/**
+	 * Flag two players as colluders - freezes XP for both
+	 * @param player1 - First colluder
+	 * @param player2 - Second colluder
+	 */
+	public native void flagAsColluders(CreatureObject player1, CreatureObject player2);
+
+	/**
+	 * Check if a kill resolves a colluder pair
+	 * If killer and victim are colluders, unfreezes BOTH
+	 * @param killer - The killer
+	 * @param victim - The victim
+	 * @return true if colluder pair was resolved
+	 */
+	public native boolean checkColluderResolution(CreatureObject killer, CreatureObject victim);
+
+	/**
+	 * Clear colluder status for a player
+	 * Also clears the partner's status if they exist
+	 * @param player - The player to clear
+	 */
+	public native void clearColluderStatus(CreatureObject player);
+
+	/**
+	 * Get joint kill count between two players (for debugging/GM tools)
+	 * @param player1 - First player
+	 * @param player2 - Second player
+	 * @return Number of joint kills recorded
+	 */
+	@dirty
+	public native int getJointKillCount(CreatureObject player1, CreatureObject player2);
+
+	// ============================================================================
+	// COMMAND COOLDOWN RETRIEVAL (from Lua config)
+	// ============================================================================
+
+	/**
+	 * Get the cooldown duration for a DW command from Lua config
+	 * @param commandName - The command name (e.g., "dwHeadshot", "dwCloak")
+	 * @return Cooldown in milliseconds, or 0 if not found
+	 */
+	@dirty
+	public native int getCommandCooldown(final string commandName);
+
+	/**
+	 * Check and apply cooldown for a DW command
+	 * Returns true if command can execute (not on cooldown), false if blocked
+	 * If blocked, sends cooldown message to player
+	 * If allowed, sets the cooldown
+	 * @param creature - The player
+	 * @param commandName - The command name
+	 * @return true if allowed (cooldown set), false if blocked
+	 */
+	@dirty
+	public native boolean checkAndApplyCooldown(CreatureObject creature, final string commandName);
+
+	/**
+	 * Check and apply weapon-speed-based cooldown for a DW command
+	 * Uses the equipped weapon's attack speed as the cooldown duration
+	 * @param creature - The player
+	 * @param commandName - The command name (for tracking)
+	 * @return true if allowed (cooldown set), false if blocked
+	 */
+	@dirty
+	public native boolean checkAndApplyWeaponSpeedCooldown(CreatureObject creature, final string commandName);
+
+	/**
+	 * Check and apply fixed-base cooldown with dw_speed reduction
+	 * Formula: finalCooldown = baseCooldown * (1 - dw_speed/200)
+	 * At 0 dw_speed: 100% cooldown
+	 * At 100 dw_speed: 50% cooldown (max reduction)
+	 * @param creature - The player
+	 * @param commandName - The command name (for tracking)
+	 * @param baseCooldownMs - Base cooldown in milliseconds
+	 * @return true if allowed (cooldown set), false if blocked
+	 */
+	@dirty
+	public native boolean checkAndApplySkillCooldown(CreatureObject creature, final string commandName, int baseCooldownMs);
+
+	// ============================================================================
+	// DW JETPACK COMBAT - VALIDATION
+	// ============================================================================
+
+	/**
+	 * Validate common prerequisites for jetpack attacks
+	 * Checks: player creature, DW skill, jetpack mounted, speed, target resolution
+	 * Call this BEFORE cooldown check so cooldown isn't consumed on failure
+	 *
+	 * @param creature - The attacking player
+	 * @param target - Target object ID from command (may be 0)
+	 * @param resolvedTarget - Output: resolved target ID (uses getTargetID() if param is 0)
+	 * @param isRanged - true for ranged attacks (10-64m), false for melee (0-32m)
+	 * @return 0 = validation passed, negative = error code (message already sent)
+	 *         -1 = not player creature
+	 *         -2 = no DW skill
+	 *         -3 = not on DW jetpack
+	 *         -4 = moving too slow (speed < 15)
+	 *         -5 = no target
+	 *         -6 = target out of range
+	 */
+	@dirty
+	public native int validateJetpackAttack(CreatureObject creature, unsigned long target, @dereferenced unsigned long resolvedTarget, boolean isRanged);
+
+	// ============================================================================
+	// DW JETPACK COMBAT - CORE ATTACK METHODS
+	// ============================================================================
+
+	/**
+	 * Execute a DW ranged attack using weapon minimum damage
+	 * All calculations done in C++ for consistency
+	 * @param attacker - The attacking player
+	 * @param target - Target object ID
+	 * @param damageMultiplier - Damage multiplier (1.0 = 100%)
+	 * @param accuracyMod - Accuracy modifier (0 = normal, negative = harder to hit)
+	 * @param damageType - 0 = health only, 1 = action only, 2 = split H/A
+	 * @return damage dealt, or -1 if attack failed (error messages sent to player)
+	 */
+	@dirty
+	public native int executeDwRangedAttack(CreatureObject attacker, unsigned long target, float damageMultiplier, int accuracyMod, int damageType);
+
+	/**
+	 * Execute a DW melee attack using weapon minimum damage
+	 * All calculations done in C++ for consistency
+	 * @param attacker - The attacking player
+	 * @param target - Target object ID
+	 * @param damageMultiplier - Damage multiplier (1.0 = 100%)
+	 * @param accuracyMod - Accuracy modifier (0 = normal, negative = harder to hit)
+	 * @param damageType - 0 = health only, 1 = action only, 2 = split H/A
+	 * @return damage dealt, or -1 if attack failed (error messages sent to player)
+	 */
+	@dirty
+	public native int executeDwMeleeAttack(CreatureObject attacker, unsigned long target, float damageMultiplier, int accuracyMod, int damageType);
+
+	/**
+	 * Check if attacker has correct weapon type equipped
+	 * @param attacker - The player
+	 * @param requireRanged - true for ranged, false for melee
+	 * @return true if correct weapon type
+	 */
+	@dirty
+	public native boolean hasCorrectWeaponType(CreatureObject attacker, boolean requireRanged);
+
+	/**
+	 * Get the equipped weapon's attack speed in seconds
+	 * @param creature - The player
+	 * @return attack speed in seconds, or 1.0 if unarmed
+	 */
+	@dirty
+	public native float getWeaponAttackSpeed(CreatureObject creature);
+
+	/**
+	 * Get the equipped weapon's base damage for DW combat
+	 * Uses harmonic mean of min/max to penalize wide damage ranges
+	 * Formula: 2 * min * max / (min + max)
+	 * This rewards balanced weapons and nerfs "monster weapons"
+	 * @param creature - The player
+	 * @return harmonic mean damage, or 50 if unarmed
+	 */
+	@dirty
+	public native int getWeaponBaseDamage(CreatureObject creature);
+
+	// ============================================================================
+	// DW EFFECT/DOT TRACKING
+	// ============================================================================
+
+	/**
+	 * Check if a target has an active DW effect of a given type
+	 * @param targetID - Target player object ID
+	 * @param effectType - Effect type (1=action drain, 2=poison, 3=burn)
+	 * @return true if target has this effect active
+	 */
+	@dirty
+	public native boolean hasActiveEffect(unsigned long targetID, int effectType);
+
+	/**
+	 * Register an active effect on a target
+	 * @param targetID - Target player object ID
+	 * @param attackerID - Attacker player object ID
+	 * @param effectType - Effect type
+	 * @param effectID - Unique effect ID from the task
+	 */
+	public native void registerEffect(unsigned long targetID, unsigned long attackerID, int effectType, unsigned long effectID);
+
+	/**
+	 * Unregister an effect when it ends
+	 * @param targetID - Target player object ID
+	 * @param effectType - Effect type
+	 */
+	public native void unregisterEffect(unsigned long targetID, int effectType);
+
+	/**
+	 * Roll for effect stacking (2% chance when target already has effect)
+	 * @return true if effect should stack, false if it should miss
+	 */
+	@dirty
+	public native boolean rollEffectStack();
+
+	/**
+	 * Apply an action drain effect to a target
+	 * Handles anti-stacking mechanics (98% miss if already affected)
+	 * @param attacker - The attacker
+	 * @param targetID - Target object ID
+	 * @param totalDamage - Total drain damage over duration
+	 * @param durationSec - Duration in seconds
+	 * @param tickIntervalSec - Tick interval in seconds
+	 * @return 0 = miss/blocked, 1 = applied, 2 = stacked
+	 */
+	@dirty
+	public native int applyActionDrain(CreatureObject attacker, unsigned long targetID, int totalDamage, int durationSec, float tickIntervalSec);
+
+	/**
+	 * Apply a wounding shot to a target
+	 * Wounds are distributed based on attacker's DW faction:
+	 * - XON (Xonti Brothers): Action pools (3,4,5) - mobility/stamina focus
+	 * - SUN (Black Sun): Health pools (0,1,2) - brutal efficiency
+	 * - KRR (Krrsantan): Health pools (0,1,2) - raw power
+	 * - ZAN (Zann Consortium): Mind pools (6,7,8) - psychological warfare
+	 * Also deals light direct damage (15% of harmonic mean)
+	 * @param attacker - The attacking player
+	 * @param targetID - Target object ID
+	 * @param baseWounds - Base wound amount before skill modifiers
+	 * @return total wounds applied, or -1 if attack failed
+	 */
+	@dirty
+	public native int applyWoundingShot(CreatureObject attacker, unsigned long targetID, int baseWounds);
+
+	/**
+	 * Apply shell shock (battle fatigue) to a target
+	 * Battle fatigue impacts healing effectiveness:
+	 * - 0-250: Minor impact
+	 * - 250-400: Moderate (healing starts to degrade)
+	 * - 400-750: Significant (healing seriously impaired)
+	 * - 750-1000: Severe (healing nearly useless)
+	 * Also deals light direct damage (10% of harmonic mean)
+	 *
+	 * NOTE: Consider adding BF clearing to dwAdrenalineStim as counterplay
+	 * Stim could clear 150-250 BF per use, creating consumable economy
+	 *
+	 * @param attacker - The attacking player
+	 * @param targetID - Target object ID
+	 * @param baseBF - Base battle fatigue amount before skill modifiers
+	 * @return BF applied, or -1 if attack failed
+	 */
+	@dirty
+	public native int applyShellShock(CreatureObject attacker, unsigned long targetID, int baseBF);
+
+	/**
+	 * Apply disarming shot to a target
+	 * Two effects:
+	 * 1. Attempts to unequip weapon from hold_r to inventory (if possible)
+	 * 2. Applies STUNNED state via buff to prevent attacks for duration
+	 *
+	 * Resistance: Defender's dw_deflection gives % chance to block
+	 * Duration scales with attacker dw_pot, reduced by defender dw_recovery
+	 *
+	 * @param attacker - The attacking player
+	 * @param targetID - Target object ID
+	 * @param baseDurationMs - Base disarm duration in milliseconds
+	 * @return 1 = full success (unequip + stun), 2 = partial (stun only), 0 = resisted, -1 = error
+	 */
+	@dirty
+	public native int applyDisarmingShot(CreatureObject attacker, unsigned long targetID, int baseDurationMs);
+
+	/**
+	 * Apply lunge attack to dismount target from their jetpack
+	 * High-risk/high-reward melee gap closer:
+	 * - Attempts to dismount target from their DW jetpack
+	 * - Deals condition damage to target's jetpack
+	 * - Defender's dw_deflection gives % chance to deflect back, dismounting ATTACKER instead
+	 *
+	 * Dismount chance: 70% base + dw_pot/5 (max 90% at 100 pot)
+	 * Deflection chance: dw_deflection/2 (max 50% at 100 deflection)
+	 * If deflected: Attacker is dismounted, their jetpack takes damage
+	 *
+	 * @param attacker - The attacking player (must be on DW jetpack)
+	 * @param targetID - Target object ID (must be on DW jetpack)
+	 * @param baseJetpackDamage - Base condition damage to jetpack
+	 * @return 1 = target dismounted, 2 = deflected (attacker dismounted), 0 = miss, -1 = error
+	 */
+	@dirty
+	public native int applyLunge(CreatureObject attacker, unsigned long targetID, int baseJetpackDamage);
+
+	/**
+	 * Apply rooting strike to immobilize target
+	 * Melee attack that roots target in place, preventing movement
+	 * - Deals light melee damage (25% of harmonic mean)
+	 * - Applies FROZEN state (complete movement lock)
+	 * - Duration: 5s base, +dw_pot/20, -dw_recovery/20
+	 * - Resistance: dw_evasion gives % chance to avoid (evasion/2, max 50%)
+	 *
+	 * @param attacker - The attacking player (must be on DW jetpack)
+	 * @param targetID - Target object ID
+	 * @param baseDurationMs - Base root duration in milliseconds
+	 * @return 1 = rooted successfully, 0 = evaded, -1 = error
+	 */
+	@dirty
+	public native int applyRootingStrike(CreatureObject attacker, unsigned long targetID, int baseDurationMs);
+
+	/**
+	 * Apply crippling blow - speed reduction debuff
+	 * Melee attack that reduces target's movement speed
+	 * - Deals moderate melee damage (40% of harmonic mean)
+	 * - Applies 50% speed reduction via buff
+	 * - Duration: 8s base, +dw_pot/25, -dw_recovery/25
+	 * - Resistance: dw_evasion gives % chance to avoid (evasion/3, max 33%)
+	 *
+	 * @param attacker - The attacking player (must be on DW jetpack)
+	 * @param targetID - Target object ID
+	 * @param baseDurationMs - Base slow duration in milliseconds
+	 * @param speedMultiplier - Speed reduction (0.5 = 50% speed)
+	 * @return 1 = slowed successfully, 0 = evaded, -1 = error
+	 */
+	@dirty
+	public native int applyCripplingBlow(CreatureObject attacker, unsigned long targetID, int baseDurationMs, float speedMultiplier);
+
+	/**
+	 * Apply shattering strike - armor/mitigation debuff
+	 * Melee attack that makes target take more damage from all sources
+	 * - Deals light melee damage (20% of harmonic mean)
+	 * - Applies private_mitigation_divisor_x100 debuff (target takes more damage)
+	 * - Base mitigation: 125 (1.25x damage taken), scales to 150 (1.5x) with max dw_pot
+	 * - Duration from weapon: harmonicDamage/50 (500dmg = 10s base)
+	 * - Duration extended by dw_pot: +50ms per point (100 pot = +5s)
+	 * - Duration reduced by dw_recovery: -50ms per point (100 recovery = -5s)
+	 * - Duration clamped: 5-20 seconds
+	 * - Resistance: dw_deflection gives % chance to block (deflection/4, max 25%)
+	 *
+	 * @param attacker - The attacking player (must be on DW jetpack)
+	 * @param targetID - Target object ID
+	 * @return 1 = debuff applied, 0 = blocked, -1 = error
+	 */
+	@dirty
+	public native int applyShatteringStrike(CreatureObject attacker, unsigned long targetID);
+
+	/**
+	 * applyJetpackBuster
+	 *
+	 * Devastating melee attack designed to destroy enemy jetpacks.
+	 * High risk/high reward - can backfire and damage attacker's jetpack instead.
+	 *
+	 * Mechanics:
+	 * - Deals massive condition damage to target's jetpack
+	 * - Damage based on weapon harmonic mean * 2 (double weapon damage to jetpack)
+	 * - dw_pot increases damage further (up to +50%)
+	 *
+	 * Backfire (deflection mechanic):
+	 * - Target's dw_deflection/2 gives backfire chance (max 50% at 100 deflection)
+	 * - On backfire: attacker's jetpack takes the damage instead
+	 *
+	 * @param attacker - The attacking player (must be on DW jetpack with melee weapon)
+	 * @param targetID - Target object ID (must be on DW jetpack)
+	 * @return positive = damage dealt, 0 = blocked/backfired, -1 = error
+	 */
+	@dirty
+	public native int applyJetpackBuster(CreatureObject attacker, unsigned long targetID);
+
+	/**
+	 * checkAndApplyCooldownWithDuration
+	 *
+	 * Checks if ability is on cooldown, applies specified duration if not.
+	 * Used for abilities with variable cooldowns (like Door Buster).
+	 *
+	 * @param player - The player to check/apply cooldown for
+	 * @param abilityName - Name of the ability for cooldown tracking
+	 * @param cooldownMs - Cooldown duration in milliseconds
+	 * @return true if ability can be used, false if on cooldown
+	 */
+	@dirty
+	public native boolean checkAndApplyCooldownWithDuration(CreatureObject player, final string abilityName, int cooldownMs);
+
+	/**
+	 * applyDoorBuster
+	 *
+	 * Building breach ability - forcibly ejects enemy DW players from buildings.
+	 * Zann Consortium specialization for hunting players who hide in structures.
+	 *
+	 * Mechanics:
+	 * - Target must be a building within 32m
+	 * - Ejects enemy DW players based on priority:
+	 *   1. Active BH bounty targets (highest priority)
+	 *   2. Greef contract targets
+	 *   3. At-war faction members (random selection)
+	 *
+	 * Max Ejects by Skill:
+	 * - Zan Box 1: 1 player
+	 * - Zan Box 2: 2 players
+	 * - Zan Box 3: 3 players
+	 * - Zan Box 4: 4 players
+	 * - DW Master: All valid targets
+	 *
+	 * Post-Eject Effects:
+	 * - Players teleported near attacker
+	 * - dwTef and pvpTef applied (prevents re-entry)
+	 * - Invincibility buff: 1-10s based on defender's dw_deflection
+	 * - First ejected set as attacker's target
+	 *
+	 * @param attacker - The attacking player (must NOT be on jetpack)
+	 * @param targetID - Building object ID
+	 * @return Number of players ejected (0 = no valid targets), -1 = error
+	 */
+	@dirty
+	public native int applyDoorBuster(CreatureObject attacker, unsigned long targetID);
+
+	// ============================================================================
+	// FACING/ANGLE UTILITIES
+	// ============================================================================
+
+	/**
+	 * Check if attacker is facing target within tolerance
+	 * Uses world positions and SWG coordinate system (North = 0 degrees)
+	 * @param attacker - The player to check facing
+	 * @param target - The target object
+	 * @param toleranceDegrees - Tolerance in degrees (e.g., 90 = 90 degrees either side)
+	 * @return true if attacker is facing target within tolerance
+	 */
+	@dirty
+	public native boolean isFacingTarget(CreatureObject attacker, SceneObject target, float toleranceDegrees);
+
+	/**
+	 * Get the angle from attacker to target in SWG degrees (North = 0, clockwise)
+	 * Uses world positions for correct cross-cell calculations
+	 * @param attacker - The reference object
+	 * @param target - The target object
+	 * @return Angle in degrees (0-360)
+	 */
+	@dirty
+	public native float getAngleToTarget(CreatureObject attacker, SceneObject target);
+
+	/**
+	 * Get the facing offset angle - how many degrees off-center the target is from attacker's facing direction
+	 * @param attacker - The attacking creature
+	 * @param target - The target object
+	 * @return Offset angle in degrees (0 = dead on, 90 = perpendicular, 180 = behind)
+	 */
+	@dirty
+	public native float getFacingOffsetAngle(CreatureObject attacker, SceneObject target);
+
+	/**
+	 * Calculate accuracy modifier based on facing angle and dw_acc skill
+	 * Angle tiers: 0-5° = bonus, 6-20° = neutral, 21-45° = penalty, 46-70° = worse, 71-90° = worst
+	 * dw_acc mitigates penalties and above 75 increases the dead-on bonus
+	 * @param attacker - The attacking creature
+	 * @param target - The target object
+	 * @return Accuracy modifier (positive = bonus, negative = penalty)
+	 */
+	@dirty
+	public native int calculateAngleAccuracyMod(CreatureObject attacker, SceneObject target);
+
+	/**
+	 * Calculate weapon range accuracy modifier based on distance to target
+	 * Uses weapon's pointBlank/ideal/maxRange accuracy values
+	 * Interpolates accuracy based on distance within each range band
+	 *
+	 * @param attacker - The attacking creature (to get equipped weapon)
+	 * @param target - The target object (to calculate distance)
+	 * @return Accuracy modifier from weapon range (can be positive or negative)
+	 */
+	@dirty
+	public native int calculateWeaponRangeAccuracyMod(CreatureObject attacker, SceneObject target);
+
+	// ============================================================================
+	// DAMAGE MITIGATION & ARMOR SYSTEMS
+	// ============================================================================
+
+	/**
+	 * Calculate damage after armor mitigation for Death Watch weapons
+	 *
+	 * Uses CombatManager's armor reduction logic:
+	 * - Gets armor at random hit location
+	 * - Applies elemental resistance (acid, energy, etc.)
+	 * - Applies armor piercing calculation
+	 * - Returns final mitigated damage
+	 *
+	 * Use this for ALL Death Watch weapon damage to properly respect armor.
+	 *
+	 * @param attacker - The attacking player
+	 * @param defender - The target player
+	 * @param rawDamage - Base damage before mitigation
+	 * @param damageType - Damage type (SharedWeaponObjectTemplate::ACID, ENERGY, etc.)
+	 * @param armorPiercing - Armor piercing level (0-3, default 0)
+	 * @return Damage after armor mitigation
+	 */
+	@dirty
+	public native float calculateMitigatedDamage(CreatureObject attacker, CreatureObject defender, float rawDamage, int damageType, int armorPiercing);
+
+	/**
+	 * Calculate heavy weapon damage mitigation using CombatManager
+	 *
+	 * Uses full CombatManager::getArmorReduction which includes:
+	 * - PSG absorption
+	 * - Standard armor (with armor piercing)
+	 * - Force Armor/Shield (if applicable)
+	 * - Cloak of Pain
+	 * - Food mitigation
+	 *
+	 * This ensures DW heavy weapons respect all the defensive investments
+	 * players have made through their various builds.
+	 *
+	 * @param attacker - The attacking player
+	 * @param defender - The defending player
+	 * @param weapon - The heavy weapon being fired
+	 * @param rawDamage - Damage before mitigation
+	 * @return Damage after full combat mitigation
+	 */
+	@dirty
+	public native float getHeavyWeaponMitigation(CreatureObject attacker, CreatureObject defender, WeaponObject weapon, float rawDamage);
+
+	/**
+	 * Apply acid corrosion to target's equipped armor
+	 *
+	 * Iterates through all equipped armor pieces and applies condition damage.
+	 * Each piece has a chance to be affected based on acid strength.
+	 * Armor with higher acid resistance takes less condition damage.
+	 * Leg armor (boots/pants) takes extra damage since they're standing in acid pools.
+	 *
+	 * @param attacker - The attacking player (for logging)
+	 * @param defender - The target player whose armor is corroded
+	 * @param baseConditionDamage - Base condition damage per piece (4-8 typical)
+	 * @param acidStrength - Affects chance and severity (0.0-1.0, from skill tapes)
+	 * @param legsMultiplier - Extra damage multiplier for leg armor (1.0 = normal, 2.0 = double)
+	 * @return Total condition damage dealt across all armor pieces
+	 */
+	@dirty
+	public native int applyAcidCorrosion(CreatureObject attacker, CreatureObject defender, int baseConditionDamage, float acidStrength, float legsMultiplier);
+
+	/**
+	 * Apply acid DOT effect to target
+	 *
+	 * Creates a damage-over-time effect using POISONED state with acid visuals.
+	 * Plays acid effect on each tick. DOT damage is NOT mitigated by armor
+	 * (it's already "inside" the armor from initial corrosion).
+	 *
+	 * @param attacker - The attacking player
+	 * @param defender - The target player
+	 * @param totalDotDamage - Total damage to deal over duration
+	 * @param durationSeconds - How long the DOT lasts
+	 * @param tickIntervalMs - Time between ticks in milliseconds (default 2000)
+	 * @return true if DOT was applied, false if target was immune or error
+	 */
+	@dirty
+	public native boolean applyAcidDot(CreatureObject attacker, CreatureObject defender, int totalDotDamage, int durationSeconds, int tickIntervalMs);
+
+	/**
+	 * Get total acid resistance for a defender
+	 *
+	 * Calculates average acid resistance across all equipped armor.
+	 * Used for DOT reduction and corrosion resistance calculations.
+	 *
+	 * @param defender - The target player
+	 * @return Average acid resistance (0-100)
+	 */
+	@dirty
+	public native float getAcidResistance(CreatureObject defender);
+
+	// ============================================================================
+	// MANDALORIAN ARMOR BONUSES
+	// ============================================================================
+
+	/**
+	 * Count how many pieces of Mandalorian armor a player has equipped
+	 *
+	 * Checks all worn armor for Mandalorian templates:
+	 * - object/tangible/wearables/armor/mandalorian/armor_mandalorian_*.iff
+	 *
+	 * Full set is 10 pieces:
+	 * - helmet, chest_plate, leggings, belt, shoes
+	 * - bicep_l, bicep_r, bracer_l, bracer_r, gloves
+	 *
+	 * @param player - The player to check
+	 * @return Number of Mandalorian armor pieces equipped (0-10)
+	 */
+	@dirty
+	public native int countMandoArmorPieces(CreatureObject player);
+
+	/**
+	 * Get the damage reduction multiplier for Death Watch players wearing Mandalorian armor
+	 *
+	 * Bonuses (applied ONLY in DW combat):
+	 * - Base: 0.97 (3% less damage taken) if wearing ANY Mandalorian armor
+	 * - Full suit (10 pieces): 0.96 (4% less damage taken)
+	 *
+	 * @param player - The player receiving damage
+	 * @return Damage multiplier (1.0 = normal, 0.97 = 3% reduction, 0.96 = 4% reduction)
+	 */
+	@dirty
+	public native float getMandoArmorDamageReduction(CreatureObject player);
+
+	/**
+	 * Get the damage bonus multiplier for Death Watch players wearing Mandalorian armor
+	 *
+	 * Bonuses (applied ONLY in DW combat):
+	 * - Base: 1.03 (3% more damage dealt) if wearing ANY Mandalorian armor
+	 * - Full suit (10 pieces): 1.04 (4% more damage dealt)
+	 *
+	 * @param player - The player dealing damage
+	 * @return Damage multiplier (1.0 = normal, 1.03 = 3% bonus, 1.04 = 4% bonus)
+	 */
+	@dirty
+	public native float getMandoArmorDamageBonus(CreatureObject player);
+
+	/**
+	 * Get the armor decay reduction multiplier for Death Watch players wearing Mandalorian armor
+	 *
+	 * Bonuses (applied to acid/electricity armor condition damage):
+	 * - Base: 0.50 (50% less armor decay) if wearing ANY Mandalorian armor
+	 * - Full suit (10 pieces): 0.25 (75% less armor decay)
+	 *
+	 * @param player - The player receiving armor decay
+	 * @return Decay multiplier (1.0 = normal, 0.50 = 50% reduction, 0.25 = 75% reduction)
+	 */
+	@dirty
+	public native float getMandoArmorDecayReduction(CreatureObject player);
+
+	// ============================================================================
+	// WHISTLING BIRD MISSILE PROCESSING
+	// ============================================================================
+
+	/**
+	 * Process a Whistling Bird missile hit with full combat calculations
+	 *
+	 * Performs all damage calculations in C++ for efficiency:
+	 * - Calculates base damage with skill tape modifiers (potency vs deflection, etc.)
+	 * - Applies Mandalorian armor damage bonus for attacker
+	 * - Applies armor mitigation based on damage type and armor piercing
+	 * - Applies Mandalorian armor damage reduction for defender
+	 * - Splits damage 50/50 between health and action
+	 * - Applies damage to target
+	 * - Updates DW TEF on target
+	 *
+	 * @param attacker - The player who fired the missile
+	 * @param defender - The target player
+	 * @param minDamage - Minimum damage from missile stats
+	 * @param maxDamage - Maximum damage from missile stats
+	 * @param damageType - Damage type from missile (ENERGY=2, BLAST=4, etc.)
+	 * @param armorPiercing - Armor piercing level from missile (0-3)
+	 * @param isSplash - If true, applies splash damage falloff (50%)
+	 * @param missileType - Missile type key for hidden bonuses (mk1, mk2, etc.)
+	 * @return Total damage dealt, or -1 on failure, or 0 if evaded/duded
+	 */
+	@dirty
+	public native int processMissileHit(CreatureObject attacker, CreatureObject defender, int minDamage, int maxDamage, int damageType, int armorPiercing, boolean isSplash, final string missileType);
+
+	// ============================================================================
+	// MK4 GROUND STRIKER PROCESSING
+	// ============================================================================
+
+	/**
+	 * Process a Mk4 Ground Striker hit on a victim
+	 *
+	 * Applies all Mk4 effects in C++ for performance:
+	 * - DIZZY state (stun) with duration scaled by skill tapes
+	 * - BLINDED state with duration scaled by skill tapes
+	 * - HUD disable via sendNewbieTutorialEnableHudElement
+	 * - Clears victim's target lock
+	 * - Minimal STUN damage (weaponDamage / 10, split health/action)
+	 * - Updates DW TEF on victim
+	 *
+	 * Duration formula: baseDuration * (1 + (atkSubterfuge - defRecovery) * 0.01)
+	 * Clamped to 50%-150% of base duration
+	 *
+	 * Config values loaded from Lua at init:
+	 * - stunDuration (seconds)
+	 * - blindDuration (seconds)
+	 * - hudDisableDuration (seconds)
+	 *
+	 * @param attacker - The player who fired the missile
+	 * @param victim - The target player
+	 * @param weaponDamage - Base weapon damage (used for stun damage calculation)
+	 * @return 1 on success, 0 if victim invalid, -1 on error
+	 */
+	@dirty
+	public native int processMk4Hit(CreatureObject attacker, CreatureObject victim, int weaponDamage);
+
+	/**
+	 * Clear the DIZZY state from a creature after duration expires
+	 * Called from scheduled task
+	 *
+	 * @param target - The creature to clear state from
+	 */
+	public native void clearDizzyState(CreatureObject target);
+
+	/**
+	 * Clear the BLINDED state from a creature after duration expires
+	 * Called from scheduled task
+	 *
+	 * @param target - The creature to clear state from
+	 */
+	public native void clearBlindedState(CreatureObject target);
+
+	/**
+	 * Restore HUD elements for a creature after Ground Striker effect expires
+	 * Called from scheduled task
+	 *
+	 * @param target - The creature to restore HUD for
+	 */
+	public native void restoreHUD(CreatureObject target);
+
+	// ============================================================================
+	// HEAVY WEAPON PROCESSING (Rocket Launcher, Acid Beam, Lightning Beam)
+	// ============================================================================
+
+	/**
+	 * Process a heavy weapon hit in DW combat
+	 *
+	 * Called from FireHeavyWeaponCommand when both attacker and defender are
+	 * DW players and the target is on a DW jetpack. Bypasses normal CombatManager
+	 * hit calculations and uses DW skill tape system instead.
+	 *
+	 * Certification Requirements:
+	 * - Rocket Launcher: combat_death_watch_zan_1 (Zann Consortium)
+	 * - Particle Beam: combat_death_watch_krr_1 (Krrsantan)
+	 * - Acid Beam: combat_death_watch_krr_2 (Krrsantan)
+	 * - Lightning Beam: combat_death_watch_sun_2 (Black Sun)
+	 *
+	 * Hit Calculation:
+	 * - Base accuracy: 60% (heavy weapons are slow but reliable)
+	 * - Attacker dw_acc: +0.3% per point (max +30% at 100)
+	 * - Defender dw_evasion: -0.25% per point (max -25% at 100)
+	 * - Final hit chance clamped to 30%-90%
+	 *
+	 * Damage Calculation:
+	 * - Base: Random between weapon min/max damage
+	 * - Attacker dw_pot: +0.5% per point (max +50% at 100)
+	 * - Defender dw_deflection: -0.3% per point (max -30% at 100)
+	 * - Mandalorian armor bonuses apply
+	 * - Standard armor mitigation applies (damage type matters)
+	 *
+	 * Rocket Launcher (BLAST damage):
+	 * - High single-target damage
+	 * - Heavy armor piercing
+	 * - Effective against heavily armored targets
+	 *
+	 * Acid Beam (ACID damage):
+	 * - Moderate damage + armor corrosion
+	 * - Medium armor piercing
+	 * - Applies condition damage to armor
+	 * - Small acid DOT
+	 *
+	 * Lightning Beam (ELECTRICITY damage):
+	 * - Lower damage but drains action
+	 * - Light armor piercing
+	 * - Applies action drain DOT
+	 *
+	 * Particle Beam (ENERGY damage):
+	 * - High damage with heavy armor piercing
+	 * - Applies wounds to health pool
+	 * - Best against heavily armored targets
+	 *
+	 * Jetpack Targeting:
+	 * - If target is a DW jetpack vehicle, damage transfers to rider
+	 * - Allows targeting enemy jetpacks directly in DW combat
+	 *
+	 * @param attacker - The player firing the heavy weapon
+	 * @param defender - The target DW player (or their jetpack)
+	 * @param weapon - The heavy weapon being fired
+	 * @return Total damage dealt, 0 if missed, -1 on error, -2 if not certified
+	 */
+	@dirty
+	public native int processHeavyWeaponHit(CreatureObject attacker, CreatureObject defender, TangibleObject weapon);
+
+	/**
+	 * Process Acid Beam spray attack (aerial strafing weapon)
+	 *
+	 * When a player fires an Acid Beam while on a DW jetpack, it sprays acid
+	 * in a forward cone hitting all players (friend or foe) within range.
+	 *
+	 * Mechanics:
+	 * - Requires: Player on DW jetpack, Acid Beam equipped
+	 * - 48m range, 90 degree cone (45 degrees each side of facing)
+	 * - Friendly fire: hits ALL players in cone regardless of faction
+	 * - Distance-based damage: closer targets take more damage (linear falloff)
+	 * - Full armor mitigation applies to each target
+	 * - Applies acid corrosion + DoT to each hit target
+	 *
+	 * @param attacker - The player firing the acid beam from jetpack
+	 * @param weapon - The acid beam weapon being fired
+	 * @return Number of targets hit, -1 on error
+	 */
+	@dirty
+	public native int processAcidBeamSpray(CreatureObject attacker, TangibleObject weapon);
+
+	/**
+	 * Check if this combat qualifies for DW heavy weapon interception
+	 *
+	 * Returns true if:
+	 * - Attacker is a DW player
+	 * - Attacker has required certification for the weapon type
+	 * - Defender is a DW player on a DW jetpack, OR target is a DW jetpack with rider
+	 * - Factions are at war
+	 *
+	 * @param attacker - The attacking player
+	 * @param target - The target (player or jetpack vehicle)
+	 * @param weapon - The heavy weapon being used
+	 * @return true if DW heavy weapon system should handle this attack
+	 */
+	@dirty
+	public native boolean shouldInterceptHeavyWeapon(CreatureObject attacker, TangibleObject target, TangibleObject weapon);
+
+	/**
+	 * Resolve the actual defender from a target (handles jetpack targeting)
+	 *
+	 * If target is a DW jetpack vehicle, returns the rider.
+	 * If target is a player, returns the player.
+	 * Otherwise returns nullptr.
+	 *
+	 * @param target - The target (player or jetpack vehicle)
+	 * @return The actual defender creature, or nullptr if invalid
+	 */
+	@dirty
+	public native CreatureObject resolveHeavyWeaponTarget(TangibleObject target);
+
+	/**
+	 * Apply immunity to Particle Beam "Mand'alor's Grip" effect
+	 *
+	 * Called after the full effect cycle completes (ramp up -> peak -> ramp down).
+	 * During immunity, the player cannot be affected by new Particle Beam hits.
+	 *
+	 * @param defender - The player to grant immunity
+	 * @param durationMs - Duration of immunity in milliseconds
+	 */
+	public native void applyParticleBeamImmunity(CreatureObject defender, int durationMs);
+
+	/**
+	 * Check if a player has immunity to Particle Beam "Mand'alor's Grip"
+	 *
+	 * @param defender - The player to check
+	 * @return true if immune, false if vulnerable
+	 */
+	@dirty
+	public native boolean hasParticleBeamImmunity(CreatureObject defender);
+
+	/**
+	 * Start the Particle Beam "Mand'alor's Grip" effect on a defender
+	 *
+	 * Creates a scheduled task that applies defense reduction in phases:
+	 * - Ramp UP: 4 ticks, each adding mitigation reduction
+	 * - PEAK: Hold at max reduction for calculated duration
+	 * - Ramp DOWN: 4 ticks, each removing mitigation reduction
+	 * - After complete: 2+ minute immunity
+	 *
+	 * @param attacker - The player who fired the Particle Beam
+	 * @param defender - The player hit by the Particle Beam
+	 * @return true if effect was applied, false if defender is immune
+	 */
+	public native boolean startParticleBeamEffect(CreatureObject attacker, CreatureObject defender);
+
+	// ============================================================================
+	// HIDDEN TEMPLATE BONUSES
+	// ============================================================================
+	// Secret bonuses based on combat profession templates.
+	// Not displayed to players - discovery through gameplay.
+	// Design goal: Every profession equally valuable, no single "best" template.
+
+	/**
+	 * Get hidden template damage reduction for a defender
+	 *
+	 * Checks defender's combat profession masteries and returns cumulative
+	 * damage reduction bonus. Different professions counter different attacks.
+	 *
+	 * @param defender - The player receiving damage
+	 * @param attackType - Attack type identifier:
+	 *   "mk1", "mk2", "mk3", "mk4", "mk5", "mk6" (Whistling Birds)
+	 *   "rocket", "particle", "acid", "lightning" (Heavy Weapons)
+	 *   "orbital", "acidStrike" (Area Strikes)
+	 * @return Damage reduction multiplier (0.0-1.0, where 0.20 = 20% reduction)
+	 */
+	@dirty
+	public native float getHiddenDamageReduction(CreatureObject defender, final string attackType);
+
+	/**
+	 * Get hidden template evasion chance for a defender
+	 *
+	 * Some professions grant a chance to fully evade certain attacks.
+	 * Roll against this chance before applying damage.
+	 *
+	 * @param defender - The player being attacked
+	 * @param attackType - Attack type identifier (see getHiddenDamageReduction)
+	 * @return Evasion chance (0.0-1.0, where 0.15 = 15% chance to fully evade)
+	 */
+	@dirty
+	public native float getHiddenEvasionChance(CreatureObject defender, final string attackType);
+
+	/**
+	 * Get hidden template damage bonus for an attacker
+	 *
+	 * Some professions deal increased damage with certain attack types.
+	 *
+	 * @param attacker - The player dealing damage
+	 * @param attackType - Attack type identifier (see getHiddenDamageReduction)
+	 * @return Damage bonus multiplier (0.0-1.0, where 0.15 = 15% bonus damage)
+	 */
+	@dirty
+	public native float getHiddenDamageBonus(CreatureObject attacker, final string attackType);
+
+	/**
+	 * Get hidden template accuracy bonus for an attacker
+	 *
+	 * Some professions have improved accuracy with certain attack types.
+	 *
+	 * @param attacker - The player attacking
+	 * @param attackType - Attack type identifier (see getHiddenDamageReduction)
+	 * @return Flat accuracy bonus (0-50 typical range)
+	 */
+	@dirty
+	public native int getHiddenAccuracyBonus(CreatureObject attacker, final string attackType);
+
+	/**
+	 * Get hidden special effect value for a player
+	 *
+	 * Some professions have unique effects that don't fit damage/evasion model.
+	 * Effect meanings vary by attack type - check documentation.
+	 *
+	 * Examples:
+	 * - "mk4" + "stunReduction": Returns stun duration reduction (0.35 = 35% shorter)
+	 * - "orbital" + "earlyWarning": Returns early warning time in seconds
+	 * - "serumEmergency" + "mitigationBonus": Returns extra mitigation value
+	 *
+	 * @param player - The player (attacker or defender depending on context)
+	 * @param attackType - Attack type identifier
+	 * @param effectName - Specific effect to query
+	 * @param isDefender - true if player is defending, false if attacking/using
+	 * @return Effect value (meaning depends on effect type), or 0.0 if no bonus
+	 */
+	@dirty
+	public native float getHiddenSpecialEffect(CreatureObject player, final string attackType, final string effectName, boolean isDefender);
+
+	/**
+	 * Check if defender's hidden bonus causes a "dud" (attack does nothing)
+	 *
+	 * Some professions (Smuggler) have a chance to cause weapons to malfunction.
+	 * Call this before processing damage - if true, attack fails harmlessly.
+	 *
+	 * @param defender - The player being attacked
+	 * @param attackType - Attack type identifier
+	 * @return true if attack should be a dud, false to proceed normally
+	 */
+	@dirty
+	public native boolean rollHiddenDudChance(CreatureObject defender, final string attackType);
+
+	/**
+	 * Get serum duration bonus for a player
+	 *
+	 * Certain professions extend serum durations.
+	 *
+	 * @param player - The player using the serum
+	 * @param serumType - Serum identifier:
+	 *   "serumBalanced", "serumCombat", "serumEmergency",
+	 *   "serumAdrenaline", "serumTargeting", "serumBactaDenial"
+	 * @return Duration bonus multiplier (0.0-0.5, where 0.25 = 25% longer)
+	 */
+	@dirty
+	public native float getSerumDurationBonus(CreatureObject player, final string serumType);
+
+	/**
+	 * Get serum cooldown reduction for a player
+	 *
+	 * Certain professions reduce serum cooldowns.
+	 *
+	 * @param player - The player using the serum
+	 * @param serumType - Serum identifier (see getSerumDurationBonus)
+	 * @return Cooldown reduction multiplier (0.0-0.3, where 0.20 = 20% shorter)
+	 */
+	@dirty
+	public native float getSerumCooldownReduction(CreatureObject player, final string serumType);
+
+	// ============================================================================
+	// DEVELOPER TESTING
+	// ============================================================================
+
+	/**
+	 * Run comprehensive DW combat system tests (GM only)
+	 * Tests all jetpack attack commands against self, bypassing normal restrictions
+	 * Validates: validation logic, damage calculations, cooldowns, angle accuracy, etc.
+	 *
+	 * @param player - The GM player running tests (must have god mode)
+	 * @return Number of tests passed, or -1 if not authorized
+	 */
+	@dirty
+	public native int runDwCombatTests(CreatureObject player);
+
+	// ============================================================================
+	// DEATH WATCH SAFE CLONING SYSTEM
+	// ============================================================================
+	// When a DW player dies, they get a custom clone UI showing:
+	// 1. HOME - Their pre-designated facility (if set) with threat level
+	// 2. HQ - Their faction's HQ (TODO: coordinates needed)
+	// 3. Random 10 - Other cloners sorted by threat (enemies within 1000m)
+	//
+	// Player cities are excluded from the random pool.
+	// Threat levels: CLEAR (0), CAUTION (1-2), DANGER (3+)
+
+	/**
+	 * Check if cloning should be intercepted for Death Watch custom UI
+	 *
+	 * @param player - The player who died
+	 * @return true if DW safe clone system should handle this player
+	 */
+	@dirty
+	public native boolean shouldInterceptCloning(CreatureObject player);
+
+	/**
+	 * Send the Death Watch safe clone selection UI
+	 *
+	 * Builds a list of cloning options with threat assessment:
+	 * - HOME: Player's pre-designated facility (always first if set)
+	 * - HQ: Faction HQ (always second) - TODO: needs coordinates
+	 * - Random 10: Other NPC cloners, shuffled, sorted by threat
+	 *
+	 * Each location shows enemy DW count within 1000m.
+	 *
+	 * @param player - The player who died
+	 * @param typeofdeath - 0 = PvE, 1 = PvP (affects clone penalties)
+	 */
+	public native void sendDeathWatchCloneRequest(CreatureObject player, int typeofdeath);
+
+	/**
+	 * Count enemy Death Watch players within range of a location
+	 *
+	 * Used for threat assessment of clone locations.
+	 *
+	 * @param player - The player checking (to determine their faction/enemies)
+	 * @param zone - The zone to scan
+	 * @param x - X coordinate
+	 * @param y - Y coordinate
+	 * @param range - Scan range in meters
+	 * @return Count of enemy DW players in range
+	 */
+	@dirty
+	public native int countEnemyDwPlayersInRange(CreatureObject player, Zone zone, float x, float y, float range);
+
+	/**
+	 * Send a Death Watch player to their selected clone location
+	 *
+	 * Handles teleport, wounds, insurance decay, etc.
+	 * Called from DwCloningRequestSuiCallback.
+	 *
+	 * @param player - The player to clone
+	 * @param clonerID - Object ID of selected cloning facility
+	 * @param typeofdeath - 0 = PvE, 1 = PvP
+	 * @param isPreDesignated - true if this was their HOME facility
+	 */
+	public native void sendDeathWatchPlayerToCloner(CreatureObject player, unsigned long clonerID, int typeofdeath, boolean isPreDesignated);
+
+	// ============================================================================
+	// STEALTH PROTOCOL SYSTEM (PEF MANAGEMENT)
+	// ============================================================================
+	// Centralized C++ management of stealth protocols for reliable PvP state handling.
+	// Shadow Protocol (Black Sun): Appear neutral but CAN attack
+	// Espionage Matrix (Zann Consortium): Appear neutral, CANNOT attack, hidden from tracking
+	//
+	// State maps and broadcast tracking are declared in DeathWatchManagerImplementation.cpp
+	// as they require HashMaps which cannot be declared in IDL.
+
+	/**
+	 * Activate Shadow Protocol for a Black Sun player
+	 *
+	 * Effects:
+	 * - Player appears NEUTRAL to enemies (no attackable flag)
+	 * - Player CAN attack enemies (one-way PEF simulation)
+	 * - When player attacks, protocol auto-deactivates
+	 * - Broadcasts updated PvP status to all DW players
+	 *
+	 * @param player - The Black Sun player activating the protocol
+	 * @return true if activated, false if not eligible or already active
+	 */
+	public native boolean activateShadowProtocol(CreatureObject player);
+
+	/**
+	 * Deactivate Shadow Protocol for a player
+	 *
+	 * Called automatically when:
+	 * - Player initiates an attack
+	 * - Player logs out
+	 * - Buff expires (if using buff-based duration)
+	 *
+	 * Broadcasts updated PvP status to all DW players.
+	 *
+	 * @param player - The player to deactivate
+	 * @param broadcastUpdate - true to broadcast PvP status update (false during logout)
+	 */
+	public native void deactivateShadowProtocol(CreatureObject player, boolean broadcastUpdate);
+
+	/**
+	 * Check if Shadow Protocol is active for a player
+	 *
+	 * @param player - The player to check
+	 * @return true if Shadow Protocol is currently active
+	 */
+	@dirty
+	public native boolean isShadowProtocolActive(CreatureObject player);
+
+	/**
+	 * Activate Espionage Matrix for a Zann Consortium player
+	 *
+	 * Effects:
+	 * - Player appears NEUTRAL to enemies (no attackable flag)
+	 * - Player CANNOT attack (must deactivate first)
+	 * - Player is hidden from Defiler droid tracking
+	 * - Player is hidden from Enemy Scan ability
+	 * - Broadcasts updated PvP status to all DW players
+	 *
+	 * @param player - The Zann Consortium player activating the protocol
+	 * @return true if activated, false if not eligible or already active
+	 */
+	public native boolean activateEspionageMatrix(CreatureObject player);
+
+	/**
+	 * Deactivate Espionage Matrix for a player
+	 *
+	 * Called when:
+	 * - Player manually deactivates
+	 * - Player logs out
+	 * - Buff expires (if using buff-based duration)
+	 *
+	 * Broadcasts updated PvP status to all DW players.
+	 *
+	 * @param player - The player to deactivate
+	 * @param broadcastUpdate - true to broadcast PvP status update (false during logout)
+	 */
+	public native void deactivateEspionageMatrix(CreatureObject player, boolean broadcastUpdate);
+
+	/**
+	 * Check if Espionage Matrix is active for a player
+	 *
+	 * @param player - The player to check
+	 * @return true if Espionage Matrix is currently active
+	 */
+	@dirty
+	public native boolean isEspionageMatrixActive(CreatureObject player);
+
+	/**
+	 * Check if a target is hidden from an observer due to stealth protocol
+	 *
+	 * Used by:
+	 * - Defiler droid tracking (all modes)
+	 * - Enemy Scan ability
+	 * - Any detection system that should respect stealth
+	 *
+	 * @param observer - The player trying to detect (e.g., Defiler user)
+	 * @param target - The player being searched for
+	 * @return true if target is hidden from observer
+	 */
+	@dirty
+	public native boolean isTargetHiddenByStealthProtocol(CreatureObject observer, CreatureObject target);
+
+	/**
+	 * Check if attacker can attack target considering stealth protocols
+	 *
+	 * Shadow Protocol: Attacker CAN attack (one-way aggression)
+	 * Espionage Matrix: Attacker CANNOT attack (must deactivate first)
+	 *
+	 * This is called from isAttackableBy() to modify combat eligibility.
+	 *
+	 * @param attacker - The player initiating the attack
+	 * @param target - The intended target
+	 * @return true if attack is allowed, false if blocked by stealth protocol
+	 */
+	@dirty
+	public native boolean canAttackWithStealthProtocol(CreatureObject attacker, CreatureObject target);
+
+	// ============================================================================
+	// PVP STATUS BROADCASTING
+	// ============================================================================
+	// Full-coverage broadcast system to ensure all DW players have correct PvP status.
+	// Solves the problem of broadcastPvpStatusBitmask() only updating nearby players.
+
+	/**
+	 * Broadcast a player's PvP status to ALL online Death Watch players
+	 *
+	 * Unlike broadcastPvpStatusBitmask() which only updates nearby players,
+	 * this method ensures every DW player sees the correct attackable/aggressive
+	 * flags for the given player.
+	 *
+	 * Call this when:
+	 * - Stealth protocol is activated/deactivated
+	 * - War state changes
+	 * - Player joins/leaves bounty
+	 * - Any event that changes PvP eligibility
+	 *
+	 * @param player - The player whose status changed
+	 */
+	public native void broadcastPvpStatusToAllDW(CreatureObject player);
+
+	/**
+	 * Refresh a player's view of ALL other Death Watch players' PvP status
+	 *
+	 * Ensures the given player sees correct attackable/aggressive flags for
+	 * every other online DW player. Used when player zones in or arrives
+	 * from another planet.
+	 *
+	 * @param player - The player who needs to receive status updates
+	 */
+	public native void refreshPvpStatusForPlayer(CreatureObject player);
+
+	/**
+	 * Schedule a player for the next PvP broadcast refresh cycle
+	 *
+	 * Adds player to the refresh queue. The periodic refresh task will
+	 * process queued players to ensure their PvP status is synchronized.
+	 *
+	 * @param player - The player to add to refresh queue
+	 */
+	public native void schedulePvpBroadcastRefresh(CreatureObject player);
+
+	/**
+	 * Run the periodic PvP broadcast refresh cycle
+	 *
+	 * Called by DwPvpRefreshTask on a timer (every 30-60 seconds).
+	 * Processes players who haven't had a full broadcast recently.
+	 * Self-corrects any missed updates from failed broadcasts.
+	 *
+	 * Limits processing to MAX_REFRESH_PER_CYCLE players per run
+	 * to prevent server lag spikes.
+	 */
+	public native void runBroadcastRefreshCycle();
+
+	/**
+	 * Handle player zone-in for PvP status synchronization
+	 *
+	 * Called when a DW player enters a zone (login, planet travel, etc.).
+	 * Ensures bidirectional PvP status sync:
+	 * 1. Player sees correct status of all other DW players
+	 * 2. All other DW players see correct status of this player
+	 *
+	 * @param player - The player who just zoned in
+	 */
+	public native void onPlayerZoneIn(CreatureObject player);
+
+	/**
+	 * Clean up stealth protocol state on player logout
+	 *
+	 * Removes player from all stealth protocol tracking maps.
+	 * Called from onPlayerLogout to prevent stale entries.
+	 *
+	 * @param player - The player logging out
+	 */
+	public native void cleanupStealthProtocolState(CreatureObject player);
+
+	// ============================================================================
+	// C++ PEF MANAGEMENT (Performance Optimized)
+	// ============================================================================
+	// Note: Helper methods getOnlineFactionPlayersCpp(), getHunterBountyTargets(),
+	// and getPlayerBountyHunterID() are defined directly in the implementation file
+	// as they use Vector<> return types not supported by IDL.
+
+	/**
+	 * Reset PEF for a single player in C++ (performance optimized)
+	 *
+	 * Handles all PEF sources:
+	 * - War state (faction enemies)
+	 * - Active bounties (as hunter)
+	 * - Being hunted (as mark)
+	 *
+	 * Called after stealth protocol deactivation to restore proper PEF state.
+	 * Much faster than Lua version as it avoids cross-language boundary overhead.
+	 *
+	 * @param player - The player to reset PEF for
+	 */
+	public native void resetPlayerPEFCpp(CreatureObject player);
+
+	/**
+	 * Clear WAR-based PEF for stealth protocol activation in C++ (performance optimized)
+	 *
+	 * Removes PEF with war enemies so player appears neutral.
+	 * Preserves bounty PEF so hunters/marks can still attack each other.
+	 *
+	 * Called when activating Shadow Protocol or Espionage Matrix.
+	 * Much faster than Lua version.
+	 *
+	 * @param player - The player activating stealth
+	 */
+	public native void clearPlayerPEFForStealthCpp(CreatureObject player);
+
+	// ============================================================================
+	// SERUM SPECIAL EFFECTS (C++ Implementation)
+	// ============================================================================
+
+	/**
+	 * Apply Adrenaline Serum high-damage mitigation
+	 *
+	 * When a player has the Adrenaline buff (dw_missile_reflector skill mod > 0)
+	 * and receives an attack dealing >5000 damage, this applies damage reduction.
+	 *
+	 * Formula: 25% base + ((dw_deflection + dw_toughness) / 8)%
+	 * Maximum: 50% mitigation
+	 *
+	 * @param defender - The player receiving damage
+	 * @param rawDamage - The damage amount before this mitigation
+	 * @return Mitigated damage amount (same as input if buff not active or damage <= 5000)
+	 */
+	@dirty
+	public native int applyAdrenalineHighDamageMitigation(CreatureObject defender, int rawDamage);
+
+	/**
+	 * Clear Combat Serum debuffs (DoTs, states, speed reset)
+	 *
+	 * Used by Combat Serum to clear negative effects:
+	 * - DoTs: Fire (ONFIRE), Bleeding (BLEEDING)
+	 * - States: Dizzy (DIZZY), Stun (STUNNED), Blind (BLINDED)
+	 * - Speed: Reset via setSpeedMultiplierMod(0, 30) to clear root/snare
+	 *
+	 * @param player - The player to clear debuffs from
+	 * Priority order (power/skill determines how many):
+	 *   1. Blind (always cleared)
+	 *   2. Stun
+	 *   3. Dizzy
+	 *   4. Bleeding
+	 *   5. Fire
+	 *   6. Speed/Root
+	 *
+	 * Formula: statesCanClear = 1 + floor(power/100) + floor(skill/5), max 6
+	 *
+	 * @param player The player to clear debuffs from
+	 * @param power The serum's power stat (25-500)
+	 * @param skill The player's dw_recovery skill mod
+	 * @return Bitmask of cleared effects (for messaging):
+	 *         Bit 0: Fire cleared
+	 *         Bit 1: Bleeding cleared
+	 *         Bit 2: Dizzy cleared
+	 *         Bit 3: Stun cleared
+	 *         Bit 4: Blind cleared
+	 *         Bit 5: Speed reset applied
+	 */
+	public native int clearCombatSerumDebuffs(CreatureObject player, int power, int skill);
+
+	// ============================================================================
+	// PET DAMAGE TRANSFER (C++ Implementation)
+	// ============================================================================
+
+	/**
+	 * Transfer damage from DW player to their high-level pet
+	 *
+	 * When a Death Watch player with a CL95+ pet takes damage, some of that
+	 * damage is transferred to their pet instead.
+	 *
+	 * Requirements:
+	 * - Player must have combat_death_watch_novice skill
+	 * - Player must have an active pet with CL >= 95
+	 * - Pet must not be incapacitated
+	 *
+	 * Formula:
+	 * - Base transfer: 10%
+	 * - Max transfer: 25%
+	 * - Scaling: 10% + min(15%, (dw_toughness + dw_recovery) * 0.075)
+	 *
+	 * @param defender - The DW player receiving damage
+	 * @param attacker - The entity dealing damage (for inflicting on pet)
+	 * @param incomingDamage - The raw damage amount before transfer
+	 * @return Damage remaining for the player after transfer (incoming - transferred)
+	 */
+	@dirty
+	public native int applyPetDamageTransfer(CreatureObject defender, TangibleObject attacker, int incomingDamage);
+
+	// ============================================================================
+	// SERUM/STIM COMMAND APPLICATION (C++ Implementation)
+	// ============================================================================
+	// Commands for activating DW serums via hotbar. Each serum type has two methods:
+	// - apply*(): Called from command, searches inventory for item
+	// - apply*WithItem(): Called from radial menu, item already known
+	//
+	// All validation, effect application, and messaging handled in C++.
+	// Config values loaded from dwStimConfig in death_watch_manager.lua at startup.
+
+	/**
+	 * Apply Tor'cabur serum (Mind Immunity toggle)
+	 *
+	 * Toggle buff that grants immunity to mind damage from DW attacks.
+	 * Using while active turns buff OFF and starts cooldown.
+	 *
+	 * @param player - The player using the serum
+	 * @return QueueCommand result code
+	 */
+	@dirty
+	public native int applyTorcabur(CreatureObject player);
+
+	/**
+	 * Apply Tor'cabur serum with item reference (radial menu path)
+	 *
+	 * @param player - The player using the serum
+	 * @param stimItem - The serum item (from radial menu)
+	 * @return QueueCommand result code
+	 */
+	@dirty
+	public native int applyTorcaburWithItem(CreatureObject player, TangibleObject stimItem);
+
+	/**
+	 * Apply Naak'kelir serum (Purge - clears negative states)
+	 *
+	 * Instant effect that clears negative states in priority order.
+	 * States cleared = 1 + floor(power/125) + floor(dw_recovery/25)
+	 *
+	 * @param player - The player using the serum
+	 * @return QueueCommand result code
+	 */
+	@dirty
+	public native int applyNaakkelir(CreatureObject player);
+
+	/**
+	 * Apply Naak'kelir serum with item reference (radial menu path)
+	 */
+	@dirty
+	public native int applyNaakkelirWithItem(CreatureObject player, TangibleObject stimItem);
+
+	/**
+	 * Apply Beskar'gam serum (Damage Shield)
+	 *
+	 * Grants damage mitigation via private_mitigation_divisor.
+	 * Mitigation = 1.5 base + (power/100) + (dw_healing * 0.05), max 3.0
+	 *
+	 * @param player - The player using the serum
+	 * @return QueueCommand result code
+	 */
+	@dirty
+	public native int applyBeskargam(CreatureObject player);
+
+	/**
+	 * Apply Beskar'gam serum with item reference (radial menu path)
+	 */
+	@dirty
+	public native int applyBeskargamWithItem(CreatureObject player, TangibleObject stimItem);
+
+	/**
+	 * Apply Gotal'din serum (Missile Reflector)
+	 *
+	 * Grants chance to reflect Whistling Bird missiles back at attacker.
+	 * Stores reflect power in skill mod for missile hit processing.
+	 *
+	 * @param player - The player using the serum
+	 * @return QueueCommand result code
+	 */
+	@dirty
+	public native int applyGotaldin(CreatureObject player);
+
+	/**
+	 * Apply Gotal'din serum with item reference (radial menu path)
+	 */
+	@dirty
+	public native int applyGotaldinWithItem(CreatureObject player, TangibleObject stimItem);
+
+	/**
+	 * Apply Ara'novor serum (Targeting Boost)
+	 *
+	 * Grants accuracy bonus for missile targeting.
+	 * Accuracy bonus = power / 5 (range: +10 to +40)
+	 *
+	 * @param player - The player using the serum
+	 * @return QueueCommand result code
+	 */
+	@dirty
+	public native int applyAranovor(CreatureObject player);
+
+	/**
+	 * Apply Ara'novor serum with item reference (radial menu path)
+	 */
+	@dirty
+	public native int applyAranovorWithItem(CreatureObject player, TangibleObject stimItem);
+
+	/**
+	 * Apply Hettir canister (AoE Bacta Denial)
+	 *
+	 * AoE 32m radius, applies debuff that blocks stimpack use to DW enemies.
+	 * Duration: 45 seconds fixed
+	 *
+	 * @param player - The player using the canister
+	 * @return QueueCommand result code
+	 */
+	@dirty
+	public native int applyHettir(CreatureObject player);
+
+	/**
+	 * Apply Hettir canister with item reference (radial menu path)
+	 */
+	@dirty
+	public native int applyHettirWithItem(CreatureObject player, TangibleObject stimItem);
+
+	/**
+	 * Generic stim application with item (for Lua radial menu)
+	 *
+	 * Determines stim type from item template and calls appropriate apply*WithItem.
+	 *
+	 * @param player - The player using the serum
+	 * @param stimItem - The serum item
+	 * @return QueueCommand result code
+	 */
+	@dirty
+	public native int applyDwStimWithItem(CreatureObject player, TangibleObject stimItem);
+
+	/**
+	 * Find a stim item in player's inventory by type
+	 *
+	 * @param player - The player to search
+	 * @param stimType - Stim type key (torcabur, naakkelir, etc.)
+	 * @return First matching stim item with charges, or nullptr if not found
+	 */
+	@dirty
+	@local
+	private native TangibleObject findStimInInventory(CreatureObject player, final string stimType);
+
+	/**
+	 * Apply HAM cost for a stim use
+	 *
+	 * @param player - The player
+	 * @param stimType - Stim type key
+	 * @return true if HAM cost applied, false if insufficient HAM
+	 */
+	@dirty
+	private native boolean applyStimHamCost(CreatureObject player, final string stimType);
+
+	/**
+	 * Apply a cooldown without checking (used after toggle-off)
+	 *
+	 * @param player - The player
+	 * @param commandName - Command name for cooldown tracking
+	 */
+	private native void applyCooldown(CreatureObject player, final string commandName);
+
+	// ============================================================================
+	// RADAR STEALTH SYSTEM
+	// ============================================================================
+	// Allows DW players to temporarily disappear from enemy radar.
+	// Activation requires no players within 400m.
+	// Duration scales with dw_subterfuge skill mod.
+	// Breaks on: zone change, expiration, manual deactivation, or detection.
+
+	/**
+	 * Attempt to activate radar stealth for a player
+	 *
+	 * Checks activation requirements:
+	 * - Must be Death Watch member
+	 * - No players within 400m
+	 *
+	 * On success:
+	 * - Player becomes invisible (removed from radar)
+	 * - Duration based on dw_subterfuge skill mod
+	 * - Broadcasts destroy packet to nearby players
+	 *
+	 * @param player - The player activating radar stealth
+	 * @return 0 = success, -1 = not DW, -2 = players nearby, -3 = already active
+	 */
+	public native int activateRadarStealth(CreatureObject player);
+
+	/**
+	 * Activate radar stealth with explicit duration (for dev testing)
+	 *
+	 * Bypasses skill calculation, uses provided duration.
+	 * Still requires no players within 400m unless bypassChecks is true.
+	 *
+	 * @param player - The player activating radar stealth
+	 * @param durationMs - Duration in milliseconds
+	 * @param bypassChecks - If true, skip 400m player check (dev only)
+	 * @return 0 = success, -1 = not DW, -2 = players nearby, -3 = already active
+	 */
+	public native int activateRadarStealthWithDuration(CreatureObject player, int durationMs, boolean bypassChecks);
+
+	/**
+	 * Deactivate radar stealth for a player
+	 *
+	 * Makes player visible again:
+	 * - Clears invisible flag
+	 * - Broadcasts player object to nearby observers
+	 * - Cleans up tracking state
+	 *
+	 * @param player - The player to reveal
+	 * @param reason - Reason code for messaging (0=manual, 1=expired, 2=zonechange, 3=detected)
+	 */
+	public native void deactivateRadarStealth(CreatureObject player, int reason);
+
+	/**
+	 * Check if radar stealth is currently active for a player
+	 *
+	 * @param player - The player to check
+	 * @return true if radar stealth is active
+	 */
+	@dirty
+	public native boolean isRadarStealthActive(CreatureObject player);
+
+	/**
+	 * Get remaining radar stealth duration in milliseconds
+	 *
+	 * @param player - The player to check
+	 * @return Remaining duration in ms, 0 if not active
+	 */
+	@dirty
+	public native int getRadarStealthRemainingMs(CreatureObject player);
+
+	/**
+	 * Calculate radar stealth duration based on player's skills
+	 *
+	 * Formula: baseDuration + (dw_subterfuge * subterfugeBonus)
+	 * Base: 8 seconds
+	 * Per subterfuge point: +0.5 seconds
+	 * Max subterfuge (19 points): 8 + 9.5 = 17.5 seconds
+	 *
+	 * @param player - The player to calculate for
+	 * @return Duration in milliseconds
+	 */
+	@dirty
+	public native int calculateRadarStealthDuration(CreatureObject player);
+}

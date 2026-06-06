@@ -1,0 +1,5 @@
+object_intangible_pet_narglatch_prowler_hue = object_intangible_pet_shared_narglatch_prowler_hue:new {
+
+}
+
+ObjectTemplates:addTemplate(object_intangible_pet_narglatch_prowler_hue, "object/intangible/pet/narglatch_prowler_hue.iff")

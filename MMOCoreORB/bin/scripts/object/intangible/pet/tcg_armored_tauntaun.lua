@@ -1,0 +1,5 @@
+object_intangible_pet_tcg_armored_tauntaun = object_intangible_pet_shared_tcg_armored_tauntaun:new {
+
+}
+
+ObjectTemplates:addTemplate(object_intangible_pet_tcg_armored_tauntaun, "object/intangible/pet/tcg_armored_tauntaun.iff")

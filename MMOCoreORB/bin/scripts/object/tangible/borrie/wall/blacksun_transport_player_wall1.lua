@@ -1,0 +1,4 @@
+object_tangible_borrie_wall_blacksun_transport_player_wall1 = object_tangible_borrie_wall_shared_blacksun_transport_player_wall1:new {
+    objectMenuComponent = "DestructibleCityDecorationMenuComponent",
+}
+ObjectTemplates:addTemplate(object_tangible_borrie_wall_blacksun_transport_player_wall1, "object/tangible/borrie/wall/blacksun_transport_player_wall1.iff")

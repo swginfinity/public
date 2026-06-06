@@ -1,0 +1,1 @@
+object_mobile_skeleton_massiff = object_mobile_skeleton_shared_massiff:new {}ObjectTemplates:addTemplate(object_mobile_skeleton_massiff, "object/mobile/skeleton/massiff.iff")

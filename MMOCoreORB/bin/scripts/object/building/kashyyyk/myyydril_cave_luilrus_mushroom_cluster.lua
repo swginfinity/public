@@ -1,0 +1,4 @@
+object_building_kashyyyk_myyydril_cave_luilrus_mushroom_cluster = object_building_kashyyyk_shared_myyydril_cave_luilrus_mushroom_cluster:new {
+        gameObjectType = 5
+}
+ObjectTemplates:addTemplate(object_building_kashyyyk_myyydril_cave_luilrus_mushroom_cluster, "object/building/kashyyyk/myyydril_cave_luilrus_mushroom_cluster.iff")

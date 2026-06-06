@@ -1,0 +1,4 @@
+object_building_general_space_dungeon_hutt_asteroid_dark = object_building_general_shared_space_dungeon_hutt_asteroid_dark:new {
+
+}
+ObjectTemplates:addTemplate(object_building_general_space_dungeon_hutt_asteroid_dark, "object/building/general/space_dungeon_hutt_asteroid_dark.iff")

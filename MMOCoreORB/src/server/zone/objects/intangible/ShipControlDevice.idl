@@ -1,0 +1,138 @@
+/*
+				Copyright <SWGEmu>
+		See file COPYING for copying conditions.
+*/
+
+package server.zone.objects.intangible;
+
+import server.zone.objects.intangible.ControlDevice;
+import server.zone.objects.creature.CreatureObject;
+import server.zone.packets.object.ObjectMenuResponse;
+include server.zone.managers.radial.RadialOptions;
+import server.zone.packets.scene.AttributeListMessage;
+import server.zone.objects.scene.SceneObject;
+import server.zone.objects.ship.ShipObject;
+include engine.util.u3d.Vector3;
+import system.util.Vector;
+
+@json
+class ShipControlDevice extends ControlDevice {
+	public static final int LANDSHIP = 1;
+	public static final int LAUNCHSHIP = 128;
+
+	protected int shipType;
+
+	@dereferenced
+	protected string parkingLocation;
+
+	@dereferenced
+	private Vector<string> skillsRequired;
+
+	@dereferenced
+	protected string storedCityName;
+
+	@dereferenced
+	protected string storedZoneName;
+
+	@dereferenced
+	protected Vector3 storedPosition;
+
+	public ShipControlDevice() {
+		Logger.setLoggingName("ShipControlDevice");
+
+		shipType = 0;
+	}
+
+	@preLocked
+	@arg1preLocked
+	public native int handleObjectMenuSelect(CreatureObject player, byte selectedID);
+
+	@local
+	@dirty
+	public native void fillObjectMenuResponse(ObjectMenuResponse menuResponse, CreatureObject player);
+
+	@preLocked
+	public native boolean launchShip(CreatureObject player, @dereferenced final string zoneName, @dereferenced final Vector3 position);
+
+	@local
+	@dirty
+	public native void fillAttributeList(AttributeListMessage alm, CreatureObject object);
+
+	@dirty
+	public native boolean canBeTradedTo(CreatureObject player, CreatureObject receiver, int numberInTrade);
+
+	@local
+	@dereferenced
+	public native Vector3 getStoredPosition(boolean randomPosition = true);
+
+	@arg1preLocked
+	public native void setStoredLocationData(CreatureObject player);
+
+	/**
+	 * Checks if the object can be destroyed
+	 * @pre { this is locked }
+	 * @post { this is locked }
+	 * @returns 0 on success, != 0 on error
+	 */
+	@dirty
+	public native int canBeDestroyed(CreatureObject player);
+
+	@preLocked
+	public native void destroyObjectFromDatabase(boolean destroyContainedObjects = false);
+
+	// Accessors
+	public native boolean isShipLaunched();
+
+	public boolean isShipControlDevice() {
+		return true;
+	}
+
+	@preLocked
+	public void setStoredCityName(final string cityName) {
+		storedCityName = cityName;
+	}
+
+	// Mutators
+	@local
+	@preLocked
+	public void setShipType(int type) {
+		shipType = type;
+	}
+
+	@dereferenced
+	public string getStoredCityName() {
+		return storedCityName;
+	}
+
+	@dereferenced
+	public string getStoredZoneName() {
+		return storedZoneName;
+	}
+
+	public int getShipType() {
+		return shipType;
+	}
+
+	@dereferenced
+	public string getParkingLocation() {
+		return parkingLocation;
+	}
+
+	@preLocked
+	public void setParkingLocation(final string location) {
+		parkingLocation = location;
+	}
+
+	public int getTotalSkillsRequired() {
+		return skillsRequired.size();
+	}
+
+	public string getSkillRequired(int index) {
+		return skillsRequired.get(index);
+	}
+
+	public void addSkillRequired(string skill) {
+		skillsRequired.add(skill);
+	}
+
+}

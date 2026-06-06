@@ -1,0 +1,5 @@
+object_draft_schematic_armor_shield_generator_personal_droideka = object_draft_schematic_armor_shared_shield_generator_personal_droideka:new {
+
+}
+
+ObjectTemplates:addTemplate(object_draft_schematic_armor_shield_generator_personal_droideka, "object/draft_schematic/armor/shield_generator_personal_droideka.iff")
